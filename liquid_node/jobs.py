@@ -33,9 +33,11 @@ def set_volumes_paths(substitutions={}):
     substitutions['liquid_volumes'] = config.liquid_volumes
     substitutions['liquid_collections'] = config.liquid_collections
     substitutions['liquid_http_port'] = config.liquid_http_port
+    substitutions['liquid_2fa'] = config.liquid_2fa
     substitutions['check_interval'] = config.check_interval
     substitutions['check_timeout'] = config.check_timeout
     substitutions['consul_socket'] = os.path.realpath(config.consul_socket)
+    substitutions['consul_url'] = config.consul_url
 
     substitutions['https_enabled'] = config.https_enabled
     if config.https_enabled:
@@ -58,7 +60,12 @@ def set_volumes_paths(substitutions={}):
             'org': 'liquidinvestigations',
             'local': os.path.join(config.liquidinvestigations_repos_path, 'core'),
             'target': '/app'
-        }
+        },
+        'authproxy': {
+            'org': 'liquidinvestigations',
+            'local': os.path.join(config.liquidinvestigations_repos_path, 'authproxy'),
+            'target': '/app'
+        },
     }
 
     for repo, repo_config in repos.items():
@@ -86,8 +93,6 @@ def get_collection_job(name, settings, template='collection.nomad'):
     set_collection_defaults(name, substitutions)
 
     return get_job(config.templates / template, substitutions)
-
-
 
 
 def render(template, subs):

@@ -15,11 +15,13 @@ sudo chown -R vagrant: .
 
 if ! [ -e volumes ]; then
   mkdir -p /opt/var/node/volumes
+  rm -f volumes
   ln -s /opt/var/node/volumes
 fi
 
 if ! [ -e collections ]; then
   mkdir -p /opt/var/node/collections
+  rm -f collections
   ln -s /opt/var/node/collections
 fi
 
@@ -27,7 +29,7 @@ if ! [ -e collections/testdata ]; then
   git clone https://github.com/hoover/testdata collections/testdata
 fi
 
-cp /tmp/vagrant-liquid.ini liquid.ini
+cp examples/liquid.ini .
 
 ./liquid deploy
 ./liquid initcollection testdata

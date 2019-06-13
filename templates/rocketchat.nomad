@@ -3,6 +3,7 @@
 job "rocketchat" {
   datacenters = ["dc1"]
   type = "service"
+  priority = 30
 
   group "db" {
     task "mongo" {
@@ -22,7 +23,7 @@ job "rocketchat" {
       }
       resources {
         memory = 500
-        cpu = 500
+        cpu = 400
         network {
           port "mongo" {}
         }
@@ -75,7 +76,7 @@ job "rocketchat" {
             OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-token_path=http://{{.Address}}:{{.Port}}/o/token/
             OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-identity_path=http://{{.Address}}:{{.Port}}/accounts/profile
           {{- end }}
-          OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-authorize_path=http://${liquid_domain}/o/authorize/
+          OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-authorize_path=${config.liquid_http_protocol}://${liquid_domain}/o/authorize/
           OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-scope=read
           {{- with secret "liquid/rocketchat/auth.oauth2" }}
             OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-id={{.Data.client_id}}
@@ -86,6 +87,10 @@ job "rocketchat" {
           OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-button_label_text=Liquid login
           OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-merge_roles=true
           OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-merge_users=true
+          OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-username_field=id
+          OVERWRITE_SETTING_Accounts_AllowPasswordChange=false
+          OVERWRITE_SETTING_Accounts_ForgetUserSessionOnWindowClose=true
+          OVERWRITE_SETTING_Accounts_RegistrationForm=Disabled
         EOF
         destination = "local/liquid.env"
       }
@@ -102,8 +107,8 @@ job "rocketchat" {
         destination = "local/main.js"
       }
       resources {
-        memory = 1000
-        cpu = 500
+        memory = 800
+        cpu = 400
         network {
           port "web" {}
         }

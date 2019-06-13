@@ -3,7 +3,8 @@
 job "nextcloud" {
   datacenters = ["dc1"]
   type = "service"
-  
+  priority = 65
+
   group "nc" {
     task "nextcloud" {
       driver = "docker"

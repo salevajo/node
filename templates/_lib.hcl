@@ -1,9 +1,28 @@
-{%- macro migration_reschedule() %}
+{%- macro continuous_reschedule() %}
   reschedule {
     unlimited = true
     attempts = 0
     delay = "5s"
   }
+  restart {
+    attempts = 3
+    interval = "18s"
+    delay = "4s"
+    mode = "fail"
+  }
+{%- endmacro %}
+
+{%- macro task_logs() %}
+logs {
+  max_files     = 5
+  max_file_size = 1
+}
+{%- endmacro %}
+
+{%- macro group_disk(size=50) %}
+ephemeral_disk {
+  size = ${size}
+}
 {%- endmacro %}
 
 {%- macro authproxy_group(name, host, upstream) %}
@@ -12,6 +31,9 @@
       driver = "docker"
       config {
         image = "liquidinvestigations/authproxy"
+        volumes = [
+          ${liquidinvestigations_authproxy_repo}
+        ]
         labels {
           liquid_task = "${name}-authproxy"
         }
@@ -45,16 +67,18 @@
         network {
           port "authproxy" {}
         }
+        memory = 150
+        cpu = 150
       }
       service {
-        name = "${name}"
+        name = "${name}-authproxy"
         port = "authproxy"
         tags = [
           "traefik.enable=true",
           "traefik.frontend.rule=Host:${host}",
         ]
         check {
-          name = "${name}"
+          name = "${name} authproxy http"
           initial_status = "critical"
           type = "http"
           path = "/__auth/logout"

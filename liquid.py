@@ -2,7 +2,6 @@
 
 """ Manage liquid on a nomad cluster. """
 
-import os
 import sys
 import logging
 import argparse
@@ -42,6 +41,7 @@ def main():
         commands.initcollection,
         commands.purge,
         commands.getsecret,
+        commands.importfromdockersetup,
     ])
     (options, extra_args) = parser.parse_known_args()
     options.cmd(*extra_args)
