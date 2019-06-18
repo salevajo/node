@@ -36,8 +36,8 @@ core_auth_apps = [
     },
     {
         'name': 'hoover',
-        'vault_path': 'hoover/search.oauth2',
-        'callback': f'{app_url("hoover")}/accounts/oauth2-exchange/',
+        'vault_path': 'hoover/auth.oauth2',
+        'callback': f'{app_url("hoover")}/__auth/callback',
     },
     {
         'name': 'dokuwiki',
@@ -45,8 +45,13 @@ core_auth_apps = [
         'callback': f'{app_url("dokuwiki")}/__auth/callback',
     },
     {
-        'name': 'rocketchat',
+        'name': 'rocketchat-authproxy',
         'vault_path': 'rocketchat/auth.oauth2',
+        'callback': f'{app_url("rocketchat")}/__auth/callback',
+    },
+    {
+        'name': 'rocketchat-app',
+        'vault_path': 'rocketchat/app.oauth2',
         'callback': f'{app_url("rocketchat")}/_oauth/liquid',
     },
     {
@@ -143,6 +148,7 @@ def deploy():
 
     vault_secret_keys = [
         'liquid/core.django',
+        'hoover/auth.django',
         'hoover/search.django',
         'authdemo/auth.django',
         'nextcloud/nextcloud.admin',
@@ -151,10 +157,22 @@ def deploy():
         'nextcloud/auth.django',
         'rocketchat/auth.django',
         'ci/vmck.django',
+        'ci/drone.secret',
     ]
 
     for path in vault_secret_keys:
         ensure_secret_key(path)
+
+    if config.ci_enabled:
+        vault.set('ci/drone.github', {
+            'client_id': config.ci_github_client_id,
+            'client_secret': config.ci_github_client_secret,
+            'user_filter': config.ci_github_user_filter,
+        })
+        vault.set('ci/drone.docker', {
+            'username': config.ci_docker_username,
+            'password': config.ci_docker_password,
+        })
 
     def start(job, hcl):
         log.info('Starting %s...', job)
@@ -177,7 +195,7 @@ def deploy():
         ensure_secret_key(f'collections/{name}/snoop.django')
 
     ensure_secret('rocketchat/adminuser', lambda: {
-        'username': 'admin',
+        'username': 'rocketchatadmin',
         'pass': random_secret(64),
     })
 
@@ -201,6 +219,15 @@ def deploy():
 
     # Wait for everything else
     wait_for_service_health_checks(health_checks)
+
+    # Run initcollection for all unregistered collections
+    already_initialized = sorted(get_search_collections())
+    for collection in sorted(config.collections.keys()):
+        if collection not in already_initialized:
+            log.info('Initializing collection: %s', collection)
+            initcollection(collection)
+        else:
+            log.info('Already initialized collection: %s', collection)
 
     push_collections_titles()
 

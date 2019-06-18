@@ -1,6 +1,5 @@
 import logging
 import os
-import time
 
 import pymongo
 
@@ -28,15 +27,13 @@ def main():
     log.info("Starting RocketChat Caboose")
     try:
         initiate_mongodb_replicaset()
-    except:  # noqa: E722
-        log.exception("Failed `initiate_mongodb_replicaset`")
+    except pymongo.errors.OperationFailure as e:
+        if 'already initialized' in e.details['errmsg']:
+            log.info('Done: already initialized.')
+            return
+        raise
 
-    log.info("Done. sleeping forever.")
-    try:
-        while True:
-            time.sleep(100)
-    finally:
-        log.info("Exiting RocketChat Caboose? Sadness :(")
+    log.info("Done.")
 
 
 if __name__ == '__main__':

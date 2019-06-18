@@ -1,4 +1,4 @@
-{% from '_lib.hcl' import authproxy_group with context -%}
+{% from '_lib.hcl' import authproxy_group, continuous_reschedule with context -%}
 
 job "rocketchat" {
   datacenters = ["dc1"]
@@ -43,10 +43,12 @@ job "rocketchat" {
   }
 
   group "app" {
+    ${ continuous_reschedule() }
+
     task "rocketchat" {
       driver = "docker"
       config = {
-        image = "rocket.chat:latest"
+        image = "rocket.chat:1.1.1"
         args = ["node", "/local/main.js"]
         labels {
           liquid_task = "rocketchat-app"
@@ -67,8 +69,8 @@ job "rocketchat" {
             ADMIN_PASS={{.Data.pass}}
           {{- end }}
           ADMIN_EMAIL=admin@example.com
-          Organization_Name=Liquid
-          Site_Name=Liquid
+          Organization_Name=${config.liquid_title}
+          Site_Name=${config.liquid_title}
           OVERWRITE_SETTING_Show_Setup_Wizard=completed
           OVERWRITE_SETTING_registerServer=false
           OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid=true
@@ -76,21 +78,24 @@ job "rocketchat" {
             OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-token_path=http://{{.Address}}:{{.Port}}/o/token/
             OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-identity_path=http://{{.Address}}:{{.Port}}/accounts/profile
           {{- end }}
-          OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-authorize_path=${config.liquid_http_protocol}://${liquid_domain}/o/authorize/
+          OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-authorize_path=${config.liquid_core_url}/o/authorize/
           OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-scope=read
-          {{- with secret "liquid/rocketchat/auth.oauth2" }}
+          {{- with secret "liquid/rocketchat/app.oauth2" }}
             OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-id={{.Data.client_id}}
             OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-secret={{.Data.client_secret}}
           {{- end }}
           OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-login_style=redirect
           OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-token_sent_via=header
-          OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-button_label_text=Liquid login
+          OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-button_label_text=Click here to get in!
           OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-merge_roles=true
           OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-merge_users=true
           OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-username_field=id
+          OVERWRITE_SETTING_Accounts_OAuth_Custom-Liquid-roles_claim=roles
           OVERWRITE_SETTING_Accounts_AllowPasswordChange=false
           OVERWRITE_SETTING_Accounts_ForgetUserSessionOnWindowClose=true
           OVERWRITE_SETTING_Accounts_RegistrationForm=Disabled
+          OVERWRITE_SETTING_Layout_Sidenav_Footer=<a href="/home"><img src="assets/logo"/></a><a href="${config.liquid_core_url}"><h1 style="font-size:77%;float:right;clear:both; color:#aaa">&#8594; ${config.liquid_title}</h1></a>
+          OVERWRITE_SETTING_UI_Allow_room_names_with_special_chars=true
         EOF
         destination = "local/liquid.env"
       }
@@ -116,10 +121,6 @@ job "rocketchat" {
       service {
         name = "rocketchat-app"
         port = "web"
-        tags = [
-          "traefik.enable=true",
-          "traefik.frontend.rule=Host:rocketchat.${liquid_domain}",
-        ]
         check {
           name = "rocketchat alive on http"
           initial_status = "critical"
@@ -135,47 +136,7 @@ job "rocketchat" {
     }
   }
 
-  group "configuration" {
-    task "caboose" {
-      driver = "docker"
-      config = {
-        image = "liquidinvestigations/caboose"
-        args = ["python", "/local/rocketchat-caboose.py"]
-        labels {
-          liquid_task = "rocketchat-caboose"
-        }
-      }
-      template {
-        data = <<EOF
-{% include 'rocketchat-caboose.py' %}
-        EOF
-        destination = "local/rocketchat-caboose.py"
-      }
-      template {
-        data = <<EOF
-          {{- range service "rocketchat-mongo" }}
-            MONGO_ADDRESS={{.Address}}
-            MONGO_PORT={{.Port}}
-          {{- end }}
-          {{- range service "rocketchat-app" }}
-            ROCKETCHAT_URL=http://{{.Address}}:{{.Port}}
-          {{- end }}
-          {{- range service "core" }}
-            LIQUID_CORE_ADDRESS={{.Address}}
-            LIQUID_CORE_PORT={{.Port}}
-          {{- end }}
-          {{- with secret "liquid/rocketchat/auth.oauth2" }}
-            LIQUID_OAUTH2_CLIENT_ID={{.Data.client_id}}
-            LIQUID_OAUTH2_CLIENT_SECRET={{.Data.client_secret}}
-          {{- end }}
-        EOF
-        destination = "local/liquid.env"
-        env = true
-      }
-    }
-  }
-
-  ${- '' and authproxy_group(
+  ${- authproxy_group(
       'rocketchat',
       host='rocketchat.' + liquid_domain,
       upstream='rocketchat-app',

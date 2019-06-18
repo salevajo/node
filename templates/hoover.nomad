@@ -1,4 +1,4 @@
-{% from '_lib.hcl' import continuous_reschedule -%}
+{% from '_lib.hcl' import authproxy_group, continuous_reschedule with context -%}
 
 job "hoover" {
   datacenters = ["dc1"]
@@ -23,7 +23,7 @@ job "hoover" {
       }
       env {
         cluster.name = "hoover"
-        ES_JAVA_OPTS = "-Xms1536m -Xmx1536m"
+        ES_JAVA_OPTS = "-Xms1024m -Xmx1024m"
       }
       resources {
         memory = 2000
@@ -118,14 +118,9 @@ job "hoover" {
             HOOVER_ES_URL = http://{{.Address}}:{{.Port}}
           {{- end }}
           HOOVER_HOSTNAME = hoover.{{key "liquid_domain"}}
-          {{- with secret "liquid/hoover/search.oauth2" }}
-            LIQUID_AUTH_PUBLIC_URL = ${config.liquid_http_protocol}://{{key "liquid_domain"}}
-            {{- range service "core" }}
-              LIQUID_AUTH_INTERNAL_URL = http://{{.Address}}:{{.Port}}
-            {{- end }}
-            LIQUID_AUTH_CLIENT_ID = {{.Data.client_id}}
-            LIQUID_AUTH_CLIENT_SECRET = {{.Data.client_secret}}
-          {{- end }}
+          HOOVER_TITLE = "Hoover <a style="display:inline-block;margin-left:10px;" href="${config.liquid_core_url}">&#8594; ${config.liquid_title}</a>"
+          HOOVER_AUTHPROXY = true
+          USE_X_FORWARDED_HOST = true
           {%- if config.liquid_http_protocol == 'https' %}
             SECURE_PROXY_SSL_HEADER = HTTP_X_FORWARDED_PROTO
           {%- endif %}
@@ -140,12 +135,8 @@ job "hoover" {
         }
       }
       service {
-        name = "hoover"
+        name = "hoover-search"
         port = "http"
-        tags = [
-          "traefik.enable=true",
-          "traefik.frontend.rule=Host:hoover.${liquid_domain}",
-        ]
         check {
           name = "hoover /_ping succeeds"
           initial_status = "critical"
@@ -180,6 +171,12 @@ job "hoover" {
       }
     }
   }
+
+  ${- authproxy_group(
+      'hoover',
+      host='hoover.' + liquid_domain,
+      upstream='hoover-search',
+    ) }
 
   group "collections" {
     task "nginx" {

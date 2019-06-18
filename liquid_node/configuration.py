@@ -1,3 +1,4 @@
+import time
 from collections import OrderedDict
 import configparser
 from pathlib import Path
@@ -15,7 +16,7 @@ class Configuration:
                 'liquid',
                 'hoover', 'hoover-ui', 'hoover-migrate',
                 'dokuwiki', 'dokuwiki-migrate',
-                'rocketchat',
+                'rocketchat', 'rocketchat-migrate',
                 'nextcloud', 'nextcloud-migrate',
             ]
         ]
@@ -40,21 +41,20 @@ class Configuration:
 
         self.liquid_domain = self.ini.get('liquid', 'domain', fallback='localhost')
 
+        default_title = ' '.join(map(str.capitalize, self.liquid_domain.split('.')))
+        self.liquid_title = self.ini.get('liquid', 'title', fallback=default_title)
+
         self.liquid_debug = self.ini.getboolean('liquid', 'debug', fallback=False)
 
         self.mount_local_repos = self.ini.getboolean('liquid', 'mount_local_repos', fallback=False)
 
-        self.hoover_repos_path = self.ini.get(
-            'liquid',
-            'hoover_repos_path',
-            fallback=str((self.root / 'repos' / 'hoover').resolve())
-        )
+        hoover_repos_path = self.ini.get('liquid', 'hoover_repos_path',
+                                         fallback=str((self.root / 'repos' / 'hoover')))
+        self.hoover_repos_path = str(Path(hoover_repos_path).resolve())
 
-        self.liquidinvestigations_repos_path = self.ini.get(
-            'liquid',
-            'liquidinvestigations_repos_path',
-            fallback=str((self.root / 'repos' / 'liquidinvestigations').resolve())
-        )
+        li_repos_path = self.ini.get('liquid', 'liquidinvestigations_repos_path',
+                                     fallback=str((self.root / 'repos' / 'liquidinvestigations')))
+        self.liquidinvestigations_repos_path = str(Path(li_repos_path).resolve())
 
         self.liquid_volumes = self.ini.get('liquid', 'volumes', fallback=str(self.root / 'volumes'))
 
@@ -76,6 +76,7 @@ class Configuration:
 
         else:
             self.liquid_http_protocol = 'http'
+        self.liquid_core_url = f'{self.liquid_http_protocol}://{self.liquid_domain}'
 
         self.liquid_2fa = self.ini.getboolean('liquid', 'two_factor_auth', fallback=False)
 
@@ -87,10 +88,12 @@ class Configuration:
 
         self.ci_enabled = 'ci' in self.ini
         if self.ci_enabled:
+            self.ci_runner_capacity = self.ini.getint('ci', 'runner_capacity', fallback=2)
+            self.ci_docker_username = self.ini.get('ci', 'docker_username')
+            self.ci_docker_password = self.ini.get('ci', 'docker_password')
             self.ci_github_client_id = self.ini.get('ci', 'github_client_id')
             self.ci_github_client_secret = self.ini.get('ci', 'github_client_secret')
             self.ci_github_user_filter = self.ini.get('ci', 'github_user_filter')
-            self.ci_github_initial_admin_username = self.ini.get('ci', 'github_initial_admin_username')
             self.jobs.append(('drone', self.templates / 'drone.nomad'))
 
         self.collections = OrderedDict()
@@ -107,6 +110,7 @@ class Configuration:
             elif cls == 'job':
                 job_config = self.ini[key]
                 self.jobs.append((name, self.root / job_config['template']))
+        self.timestamp = int(time.time())
 
     @classmethod
     def _validate_collection_name(self, name):

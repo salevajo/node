@@ -53,7 +53,7 @@ job "nextcloud" {
       }
     }
   }
-  
+
   group "db" {
     task "pg" {
       driver = "docker"

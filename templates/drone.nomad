@@ -72,6 +72,7 @@ job "drone" {
       driver = "docker"
       config {
         image = "vmck/vmck:0.0.1-permit-archived-artifact"
+        args = ["sh", "/local/startup.sh"]
         volumes = [
           "${liquid_volumes}/vmck:/opt/vmck/data",
         ]
@@ -81,6 +82,20 @@ job "drone" {
         labels {
           liquid_task = "vmck"
         }
+      }
+      template {
+        data = <<-EOF
+        #!/bin/sh
+        set -ex
+        if [ -z "$QEMU_IMAGE_URL" ]; then
+          echo "NO QEMU_IMAGE_URL!"
+          sleep 10
+          exit 1
+        fi
+        exec /opt/vmck/runvmck
+        EOF
+        env = false
+        destination = "local/startup.sh"
       }
       template {
         data = <<-EOF
@@ -124,6 +139,64 @@ job "drone" {
     }
   }
 
+  group "drone-secret" {
+    ${ group_disk() }
+    task "drone-secret" {
+      ${ task_logs() }
+      driver = "docker"
+      config {
+        image = "drone/vault"
+        port_map {
+          http = 3000
+        }
+        labels {
+          liquid_task = "drone-secret"
+        }
+      }
+      env {
+        VAULT_TOKEN = "${config.vault_token}"
+        VAULT_SKIP_VERIFY = "true"
+        VAULT_MAX_RETRIES = "5"
+      }
+      template {
+        data = <<EOF
+          {{- range service "vault" }}
+            VAULT_ADDR="http://{{.Address}}:{{.Port}}"
+          {{- end }}
+          {{- with secret "liquid/ci/drone.secret" }}
+            SECRET_KEY = {{.Data.secret_key}}
+          {{- end }}
+          {{- with secret "liquid/ci/drone.github" }}
+            DRONE_GITHUB_CLIENT_ID = {{.Data.client_id}}
+            DRONE_GITHUB_CLIENT_SECRET = {{.Data.client_secret}}
+            DRONE_USER_FILTER = {{.Data.user_filter}}
+          {{- end }}
+        EOF
+        destination = "local/drone.env"
+        env = true
+      }
+      resources {
+        memory = 150
+        cpu = 150
+        network {
+          port "http" {}
+        }
+      }
+      service {
+        name = "drone-secret"
+        port = "http"
+        check {
+          name = "drone-secret alive on tcp, because the http is authenticated"
+          initial_status = "critical"
+          type = "tcp"
+          interval = "${check_interval}"
+          timeout = "${check_timeout}"
+        }
+      }
+    }
+  }
+
+
   group "drone" {
     ${ group_disk() }
     task "drone" {
@@ -145,18 +218,25 @@ job "drone" {
       env {
         DRONE_LOGS_DEBUG = "true"
         DRONE_GITHUB_SERVER = "https://github.com"
-        DRONE_GITHUB_CLIENT_ID = "${config.ci_github_client_id}"
-        DRONE_GITHUB_CLIENT_SECRET = "${config.ci_github_client_secret}"
-        DRONE_USER_FILTER = "${config.ci_github_user_filter}"
-        DRONE_USER_CREATE = "username:${config.ci_github_initial_admin_username},admin:true"
         DRONE_SERVER_HOST = "jenkins.${liquid_domain}"
         DRONE_SERVER_PROTO = "${config.liquid_http_protocol}"
-        DRONE_RUNNER_CAPACITY = "2"
+        DRONE_RUNNER_CAPACITY = "${config.ci_runner_capacity}"
       }
       template {
         data = <<EOF
           {{- range service "vmck" }}
             DRONE_RUNNER_ENVIRON="VMCK_IP:{{.Address}},VMCK_PORT:{{.Port}}"
+          {{- end }}
+          {{- range service "drone-secret" }}
+            DRONE_SECRET_ENDPOINT="http://{{.Address}}:{{.Port}}"
+          {{- end }}
+          {{- with secret "liquid/ci/drone.secret" }}
+            DRONE_SECRET_SECRET = {{.Data.secret_key}}
+          {{- end }}
+          {{- with secret "liquid/ci/drone.github" }}
+            DRONE_GITHUB_CLIENT_ID = {{.Data.client_id}}
+            DRONE_GITHUB_CLIENT_SECRET = {{.Data.client_secret}}
+            DRONE_USER_FILTER = {{.Data.user_filter}}
           {{- end }}
         EOF
         destination = "local/drone.env"
