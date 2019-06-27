@@ -15,7 +15,7 @@ job "drone" {
         image = "nginx:mainline"
         volumes = [
           "${liquid_volumes}/vmck-images:/usr/share/nginx/html",
-          "custom/default.conf:/etc/nginx/conf.d/default.conf",
+          "local/nginx.conf:/etc/nginx/nginx.conf",
         ]
         port_map {
           http = 80
@@ -28,25 +28,55 @@ job "drone" {
         memory = 80
         cpu = 200
         network {
-          port "http" {}
+          port "http" {
+            static = 10000
+          }
         }
       }
       template {
-        data = <<EOF
-          server {
+        data = <<-EOF
+          user  nginx;
+          worker_processes auto;
+
+          error_log  /var/log/nginx/error.log warn;
+          pid        /var/run/nginx.pid;
+
+          events {
+            worker_connections  1024;
+          }
+
+          http {
+            include       /etc/nginx/mime.types;
+            default_type  application/octet-stream;
+
+            log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                              '$status $body_bytes_sent "$http_referer" '
+                              '"$http_user_agent" "$http_x_forwarded_for"';
+
+            access_log  /var/log/nginx/access.log  main;
+
+            sendfile        on;
+            sendfile_max_chunk 4m;
+            aio threads;
+            keepalive_timeout  65;
+            server {
               listen       80;
               server_name  _;
               access_log  /dev/stdout  main;
               error_log /dev/stderr info;
               location / {
-                  root   /usr/share/nginx/html;
-                  autoindex on;
-                  proxy_max_temp_file_size 0;
-                  proxy_buffering off;
+                root   /usr/share/nginx/html;
+                autoindex on;
+                proxy_max_temp_file_size 0;
+                proxy_buffering off;
               }
+              location = /healthcheck {
+                stub_status;
+              }
+            }
           }
         EOF
-        destination = "custom/default.conf"
+        destination = "local/nginx.conf"
       }
       service {
         name = "vmck-imghost"
@@ -55,7 +85,7 @@ job "drone" {
           name = "vmck-imghost nginx alive on http"
           initial_status = "critical"
           type = "http"
-          path = "/"
+          path = "/healthcheck"
           interval = "${check_interval}"
           timeout = "${check_timeout}"
         }
@@ -87,9 +117,15 @@ job "drone" {
         data = <<-EOF
         #!/bin/sh
         set -ex
+        echo
+        echo
+        date
+        cat /local/vmck.env
+        cat /local/vmck-imghost.env
+        cat /local/startup.sh
         if [ -z "$QEMU_IMAGE_URL" ]; then
           echo "NO QEMU_IMAGE_URL!"
-          sleep 10
+          sleep 5
           exit 1
         fi
         exec /opt/vmck/runvmck
@@ -99,26 +135,30 @@ job "drone" {
       }
       template {
         data = <<-EOF
-        {{- with secret "liquid/ci/vmck.django" }}
+        {{- with secret "liquid/ci/vmck.django" -}}
           SECRET_KEY = {{.Data.secret_key}}
         {{- end }}
-        DEBUG = "true"
         HOSTNAME = "*"
         SSH_USERNAME = "vagrant"
         CONSUL_URL = "${config.consul_url}"
         NOMAD_URL = "${config.nomad_url}"
         BACKEND = "qemu"
-        {{- range service "vmck-imghost" }}
-          QEMU_IMAGE_URL = "http://{{.Address}}:{{.Port}}/cluster-master.qcow2.tar.gz"
-        {{- end }}
-        QEMU_MEMORY = 14000
-        QEMU_CPU = 2000
+        QEMU_CPU_MHZ = 3000
         EOF
         destination = "local/vmck.env"
         env = true
       }
+      template {
+        data = <<-EOF
+        {{- range service "vmck-imghost" -}}
+          QEMU_IMAGE_URL = "http://{{.Address}}:{{.Port}}/cluster-master.qcow2.tar.gz"
+        {{- end }}
+        EOF
+        destination = "local/vmck-imghost.env"
+        env = true
+      }
       resources {
-        memory = 350
+        memory = 450
         cpu = 350
         network {
           port "http" {
@@ -156,22 +196,15 @@ job "drone" {
         }
       }
       env {
+        VAULT_ADDR = "${config.vault_url}"
         VAULT_TOKEN = "${config.vault_token}"
         VAULT_SKIP_VERIFY = "true"
         VAULT_MAX_RETRIES = "5"
       }
       template {
         data = <<EOF
-          {{- range service "vault" }}
-            VAULT_ADDR="http://{{.Address}}:{{.Port}}"
-          {{- end }}
           {{- with secret "liquid/ci/drone.secret" }}
             SECRET_KEY = {{.Data.secret_key}}
-          {{- end }}
-          {{- with secret "liquid/ci/drone.github" }}
-            DRONE_GITHUB_CLIENT_ID = {{.Data.client_id}}
-            DRONE_GITHUB_CLIENT_SECRET = {{.Data.client_secret}}
-            DRONE_USER_FILTER = {{.Data.user_filter}}
           {{- end }}
         EOF
         destination = "local/drone.env"
@@ -181,7 +214,9 @@ job "drone" {
         memory = 150
         cpu = 150
         network {
-          port "http" {}
+          port "http" {
+            static = 9998
+          }
         }
       }
       service {
@@ -248,7 +283,9 @@ job "drone" {
         memory = 250
         cpu = 150
         network {
-          port "http" {}
+          port "http" {
+            static = 9997
+          }
         }
       }
       service {
