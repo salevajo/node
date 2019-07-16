@@ -1,4 +1,5 @@
 from pathlib import Path
+from collections import defaultdict
 from time import time, sleep
 import logging
 import os
@@ -132,8 +133,47 @@ def wait_for_service_health_checks(health_checks):
     raise RuntimeError(msg)
 
 
+def resources():
+    """Get memory and CPU usage for the deployment"""
+
+    def get_all_res():
+        jobs = [nomad.parse(get_job(job.template)) for job in config.jobs]
+        for name, settings in config.collections.items():
+            for template in ['collection-migrate.nomad', 'collection.nomad']:
+                job = get_collection_job(name, settings, template)
+                jobs.append(nomad.parse(job))
+        for spec in jobs:
+            yield from nomad.get_resources(spec)
+
+    total = defaultdict(int)
+    for name, _type, res in get_all_res():
+        for key in ['MemoryMB', 'CPU', 'EphemeralDiskMB']:
+            if key not in res:
+                continue
+            if res[key] is None:
+                raise RuntimeError("Please update Nomad to 0.9.3+")
+            total[f'{_type} {key}'] += res[key]
+
+    print('Resource requirement totals: ')
+    for key, value in sorted(total.items()):
+        print(f'  {key}: {value}')
+
+
+def check_system_config():
+    """Raises errors if the system is improperly configured.
+
+    This checks if elasticsearch will accept our
+    vm.max_map_count kernel parameter value.
+    """
+
+    assert int(run("sysctl -n vm.max_map_count")) >= 262144, \
+        'the "vm.max_map_count" kernel parameter is too low, check readme'
+
+
 def deploy():
     """Run all the jobs in nomad."""
+
+    check_system_config()
 
     consul.set_kv('liquid_domain', config.liquid_domain)
     consul.set_kv('liquid_debug', 'true' if config.liquid_debug else 'false')
@@ -175,10 +215,12 @@ def deploy():
         })
 
     def start(job, hcl):
+        log.info('Parsing %s...', job)
+        spec = nomad.parse(hcl)
         log.info('Starting %s...', job)
-        nomad.run(hcl)
+        nomad.run(spec)
         job_checks = {}
-        for service, checks in nomad.get_health_checks(hcl):
+        for service, checks in nomad.get_health_checks(spec):
             if not checks:
                 log.warn(f'service {service} has no health checks')
                 continue
@@ -230,6 +272,7 @@ def deploy():
             log.info('Already initialized collection: %s', collection)
 
     push_collections_titles()
+    log.info("Deploy done!")
 
 
 def halt():
@@ -377,8 +420,8 @@ def importfromdockersetup(path, method='link'):
     import_index(docker_setup, method)
 
     add_collections_ini(collections)
-
-    deploy()
+    print()
+    print('After adding the lines, re-run "./liquid deploy"')
 
 
 def shell(name, *args):
