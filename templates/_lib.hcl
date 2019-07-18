@@ -44,22 +44,22 @@ ephemeral_disk {
         }
       }
       template {
-        data = <<EOF
+        data = <<-EOF
           {{- range service "${upstream}" }}
-            UPSTREAM_APP_URL = http://{{.Address}}:{{.Port}}
+            UPSTREAM_APP_URL = "http://{{.Address}}:{{.Port}}"
           {{- end }}
-          DEBUG = {{key "liquid_debug"}}
-          USER_HEADER_TEMPLATE = {}
+          DEBUG = {{key "liquid_debug" | toJSON }}
+          USER_HEADER_TEMPLATE = "{}"
           {{- range service "core" }}
-            LIQUID_INTERNAL_URL = http://{{.Address}}:{{.Port}}
+            LIQUID_INTERNAL_URL = "http://{{.Address}}:{{.Port}}"
           {{- end }}
-          LIQUID_PUBLIC_URL = ${config.liquid_http_protocol}://{{key "liquid_domain"}}
+          LIQUID_PUBLIC_URL = "${config.liquid_http_protocol}://{{key "liquid_domain"}}"
           {{- with secret "liquid/${name}/auth.django" }}
-            SECRET_KEY = {{.Data.secret_key}}
+            SECRET_KEY = {{.Data.secret_key | toJSON }}
           {{- end }}
           {{- with secret "liquid/${name}/auth.oauth2" }}
-            LIQUID_CLIENT_ID = {{.Data.client_id}}
-            LIQUID_CLIENT_SECRET = {{.Data.client_secret}}
+            LIQUID_CLIENT_ID = {{.Data.client_id | toJSON }}
+            LIQUID_CLIENT_SECRET = {{.Data.client_secret | toJSON }}
           {{- end }}
         EOF
         destination = "local/docker.env"
@@ -67,6 +67,7 @@ ephemeral_disk {
       }
       resources {
         network {
+          mbits = 1
           port "authproxy" {}
         }
         memory = 150
@@ -89,5 +90,34 @@ ephemeral_disk {
         }
       }
     }
+  }
+{%- endmacro %}
+
+{%- macro set_pg_password_template(username) %}
+  template {
+    data = <<-EOF
+    #!/bin/sh
+    set -ex
+    pwd
+    date
+    if grep -Fq "$host all all all trust" $PGDATA/pg_hba.conf
+    then
+      (
+      set +x
+      psql -U ${username} -c "ALTER USER ${username} password '$POSTGRES_PASSWORD'"
+      )
+      sed -i '$d' $PGDATA/pg_hba.conf
+      sed -i '$d' $PGDATA/pg_hba.conf
+      {
+        echo
+        echo "host all all all md5"
+        echo
+      } >> "$PGDATA/pg_hba.conf"
+      echo database password changed
+    else
+      echo "password already set"
+    fi
+    EOF
+    destination = "local/set_pg_password.sh"
   }
 {%- endmacro %}

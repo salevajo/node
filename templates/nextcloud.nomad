@@ -44,8 +44,23 @@ job "nextcloud" {
       }
       resources {
         network {
+          mbits = 1
           port "http" {}
         }
+      }
+      env {
+        NEXTCLOUD_URL = "${config.liquid_http_protocol}://nextcloud.${config.liquid_domain}"
+        LIQUID_TITLE = "${config.liquid_title}"
+        LIQUID_CORE_URL = "${config.liquid_core_url}"
+      }
+      template {
+        data = <<-EOF
+        {{- with secret "liquid/nextcloud/nextcloud.admin" }}
+          OC_PASS = {{.Data.secret_key | toJSON }}
+        {{- end }}
+        EOF
+        destination = "local/nextcloud-migrate.env"
+        env = true
       }
       service {
         name = "nextcloud"
@@ -70,18 +85,23 @@ job "nextcloud" {
         }
       }
       template {
-        data = <<EOF
-          POSTGRES_USER ="postgres"
-          {{- with secret "liquid/nextcloud/nextcloud.pg" }}
-            POSTGRES_PASSWORD = {{.Data.secret_key}}
-          {{- end }}
+        data = <<-EOF
+        MYSQL_RANDOM_ROOT_PASSWORD = "yes"
+        MYSQL_DATABASE = "nextcloud"
+        MYSQL_USER = "nextcloud"
+        {{- with secret "liquid/nextcloud/nextcloud.maria" }}
+          MYSQL_PASSWORD = {{.Data.secret_key | toJSON }}
+        {{- end }}
         EOF
         destination = "local/pg.env"
         env = true
       }
       resources {
         network {
-          port "pg" {}
+          mbits = 1
+          port "maria" {
+            static = 8767
+          }
         }
       }
       service {

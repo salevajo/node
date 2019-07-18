@@ -1,4 +1,4 @@
-{% from '_lib.hcl' import authproxy_group, continuous_reschedule with context -%}
+{% from '_lib.hcl' import authproxy_group, continuous_reschedule, set_pg_password_template with context -%}
 
 job "hoover" {
   datacenters = ["dc1"]
@@ -23,11 +23,12 @@ job "hoover" {
       }
       env {
         cluster.name = "hoover"
-        ES_JAVA_OPTS = "-Xms1024m -Xmx1024m"
+        ES_JAVA_OPTS = "-Xms${config.elasticsearch_heap_size}m -Xmx${config.elasticsearch_heap_size}m"
       }
       resources {
-        memory = 2000
+        memory = ${config.elasticsearch_memory_limit}
         network {
+          mbits = 1
           port "es" {}
         }
       }
@@ -63,13 +64,22 @@ job "hoover" {
           pg = 5432
         }
       }
-      env {
-        POSTGRES_USER = "search"
-        POSTGRES_DATABASE = "search"
+      template {
+        data = <<EOF
+          POSTGRES_USER = "search"
+          POSTGRES_DATABASE = "search"
+          {{- with secret "liquid/hoover/search.postgres" }}
+            POSTGRES_PASSWORD = {{.Data.secret_key | toJSON }}
+          {{- end }}
+        EOF
+        destination = "local/postgres.env"
+        env = true
       }
+      ${ set_pg_password_template('search') }
       resources {
         memory = 350
         network {
+          mbits = 1
           port "pg" {}
         }
       }
@@ -80,6 +90,41 @@ job "hoover" {
           name = "hoover-pg alive on tcp"
           initial_status = "critical"
           type = "tcp"
+          interval = "${check_interval}"
+          timeout = "${check_timeout}"
+        }
+      }
+    }
+  }
+
+  group "tika" {
+    task "tika" {
+      driver = "docker"
+      config {
+        image = "logicalspark/docker-tikaserver:1.20"
+        port_map {
+          tika = 9998
+        }
+        labels {
+          liquid_task = "hoover-tika"
+        }
+      }
+      resources {
+        memory = 800
+        cpu = 200
+        network {
+          mbits = 1
+          port "tika" {}
+        }
+      }
+      service {
+        name = "hoover-tika"
+        port = "tika"
+        check {
+          name = "hoover-tika alive on http"
+          initial_status = "critical"
+          type = "http"
+          path = "/version"
           interval = "${check_interval}"
           timeout = "${check_timeout}"
         }
@@ -104,25 +149,29 @@ job "hoover" {
         }
       }
       template {
-        data = <<EOF
+        data = <<-EOF
           {{- if keyExists "liquid_debug" }}
-            DEBUG = {{key "liquid_debug"}}
+            DEBUG = {{key "liquid_debug" | toJSON }}
           {{- end }}
           {{- with secret "liquid/hoover/search.django" }}
-            SECRET_KEY = {{.Data.secret_key}}
+            SECRET_KEY = {{.Data.secret_key | toJSON }}
           {{- end }}
           {{- range service "hoover-pg" }}
-            HOOVER_DB = postgresql://search:search@{{.Address}}:{{.Port}}/search
+            HOOVER_DB = "postgresql://search:
+            {{- with secret "liquid/hoover/search.postgres" -}}
+              {{.Data.secret_key }}
+            {{- end -}}
+            @{{.Address}}:{{.Port}}/search"
           {{- end }}
           {{- range service "hoover-es" }}
-            HOOVER_ES_URL = http://{{.Address}}:{{.Port}}
+            HOOVER_ES_URL = "http://{{.Address}}:{{.Port}}"
           {{- end }}
-          HOOVER_HOSTNAME = hoover.{{key "liquid_domain"}}
+          HOOVER_HOSTNAME = "hoover.{{key "liquid_domain"}}"
           HOOVER_TITLE = "Hoover <a style="display:inline-block;margin-left:10px;" href="${config.liquid_core_url}">&#8594; ${config.liquid_title}</a>"
-          HOOVER_AUTHPROXY = true
-          USE_X_FORWARDED_HOST = true
+          HOOVER_AUTHPROXY = "true"
+          USE_X_FORWARDED_HOST = "true"
           {%- if config.liquid_http_protocol == 'https' %}
-            SECURE_PROXY_SSL_HEADER = HTTP_X_FORWARDED_PROTO
+            SECURE_PROXY_SSL_HEADER = "HTTP_X_FORWARDED_PROTO"
           {%- endif %}
         EOF
         destination = "local/hoover.env"
@@ -131,6 +180,7 @@ job "hoover" {
       resources {
         memory = 300
         network {
+          mbits = 1
           port "http" {}
         }
       }
@@ -261,6 +311,7 @@ job "hoover" {
       resources {
         memory = 100
         network {
+          mbits = 1
           port "nginx" {
             static = 8765
           }
@@ -270,10 +321,9 @@ job "hoover" {
         name = "hoover-collections"
         port = "nginx"
         check {
-          name = "hoover-collections nginx on :8765 forwards elasticsearch"
+          name = "hoover-collections replies to tcp"
           initial_status = "critical"
-          type = "http"
-          path = "/_es/_cluster/health/"
+          type = "tcp"
           interval = "${check_interval}"
           timeout = "${check_timeout}"
         }
