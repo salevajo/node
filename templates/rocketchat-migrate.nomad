@@ -15,7 +15,7 @@ job "rocketchat-migrate" {
 
       driver = "docker"
       config {
-        image = "${config.image('liquidinvestigations/caboose')}"
+        image = "python:alpine"
         args = ["python", "/local/rocketchat-caboose.py"]
         labels {
           liquid_task = "rocketchat-caboose"
