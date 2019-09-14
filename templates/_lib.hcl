@@ -1,15 +1,4 @@
 {%- macro continuous_reschedule() %}
-  reschedule {
-    unlimited = true
-    attempts = 0
-    delay = "5s"
-  }
-  restart {
-    attempts = 3
-    interval = "18s"
-    delay = "4s"
-    mode = "fail"
-  }
 {%- endmacro %}
 
 {%- macro task_logs() %}
@@ -25,9 +14,14 @@ ephemeral_disk {
 }
 {%- endmacro %}
 
-{%- macro authproxy_group(name, host, upstream) %}
+{%- macro authproxy_group(name, host, upstream, threads=4, memory=150, user_header_template="{}") %}
   group "authproxy" {
-    ${ continuous_reschedule() }
+    restart {
+      interval = "2m"
+      attempts = 4
+      delay = "20s"
+      mode = "delay"
+    }
 
     task "web" {
       driver = "docker"
@@ -49,7 +43,7 @@ ephemeral_disk {
             UPSTREAM_APP_URL = "http://{{.Address}}:{{.Port}}"
           {{- end }}
           DEBUG = {{key "liquid_debug" | toJSON }}
-          USER_HEADER_TEMPLATE = "{}"
+          USER_HEADER_TEMPLATE = ${user_header_template|tojson}
           {{- range service "core" }}
             LIQUID_INTERNAL_URL = "http://{{.Address}}:{{.Port}}"
           {{- end }}
@@ -61,7 +55,8 @@ ephemeral_disk {
             LIQUID_CLIENT_ID = {{.Data.client_id | toJSON }}
             LIQUID_CLIENT_SECRET = {{.Data.client_secret | toJSON }}
           {{- end }}
-        EOF
+          THREADS = ${threads}
+          EOF
         destination = "local/docker.env"
         env = true
       }
@@ -70,7 +65,7 @@ ephemeral_disk {
           mbits = 1
           port "authproxy" {}
         }
-        memory = 150
+        memory = ${memory}
         cpu = 150
       }
       service {
@@ -81,7 +76,7 @@ ephemeral_disk {
           "traefik.frontend.rule=Host:${host}",
         ]
         check {
-          name = "${name} authproxy http"
+          name = "http"
           initial_status = "critical"
           type = "http"
           path = "/__auth/logout"
@@ -97,26 +92,10 @@ ephemeral_disk {
   template {
     data = <<-EOF
     #!/bin/sh
-    set -ex
-    pwd
-    date
-    if grep -Fq "$host all all all trust" $PGDATA/pg_hba.conf
-    then
-      (
-      set +x
-      psql -U ${username} -c "ALTER USER ${username} password '$POSTGRES_PASSWORD'"
-      )
-      sed -i '$d' $PGDATA/pg_hba.conf
-      sed -i '$d' $PGDATA/pg_hba.conf
-      {
-        echo
-        echo "host all all all md5"
-        echo
-      } >> "$PGDATA/pg_hba.conf"
-      echo database password changed
-    else
-      echo "password already set"
-    fi
+    set -e
+    sed -i 's/host all all all trust/host all all all md5/' $PGDATA/pg_hba.conf
+    psql -U ${username} -c "ALTER USER ${username} password '$POSTGRES_PASSWORD'"
+    echo "password set for postgresql host=$(hostname) user=${username}" >&2
     EOF
     destination = "local/set_pg_password.sh"
   }

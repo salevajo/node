@@ -7,11 +7,16 @@ job "dokuwiki" {
 
   group "dokuwiki" {
     task "php" {
+      constraint {
+        attribute = "{% raw %}${meta.liquid_volumes}{% endraw %}"
+        operator = "is_set"
+      }
+
       driver = "docker"
       config = {
-        image = "bitnami/dokuwiki:0"
+        image = "bitnami/dokuwiki:0.20180422.201901061035"
         volumes = [
-          "${liquid_volumes}/dokuwiki/data:/bitnami",
+          "{% raw %}${meta.liquid_volumes}{% endraw %}/dokuwiki/data:/bitnami",
         ]
         labels {
           liquid_task = "dokuwiki"
@@ -22,7 +27,7 @@ job "dokuwiki" {
       }
       resources {
         memory = 500
-        cpu = 200
+        cpu = 90
         network {
           mbits = 1
           port "php" {}
@@ -32,7 +37,7 @@ job "dokuwiki" {
         name = "dokuwiki-php"
         port = "php"
         check {
-          name = "dokuwiki-php alive on http"
+          name = "http"
           initial_status = "critical"
           type = "http"
           path = "/"

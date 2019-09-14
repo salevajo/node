@@ -9,6 +9,8 @@ from liquid_node import commands
 from urllib.error import HTTPError
 
 
+import colorlog
+
 log = logging.getLogger(__name__)
 
 
@@ -38,6 +40,8 @@ def main():
         commands.deploy,
         commands.resources,
         commands.gc,
+        commands.collectionsgc,
+        commands.nomadgc,
         commands.halt,
         commands.initcollection,
         commands.deletecollection,
@@ -52,10 +56,13 @@ def main():
 if __name__ == '__main__':
     from liquid_node.configuration import config
     level = logging.DEBUG if config.liquid_debug else logging.INFO
-    log.setLevel(level)
+    handler = colorlog.StreamHandler()
+    handler.setLevel(level)
+    handler.setFormatter(colorlog.ColoredFormatter(
+        '%(asctime)s %(log_color)s%(levelname)8s %(message)s'))
     logging.basicConfig(
+        handlers=[handler],
         level=level,
-        format='%(asctime)s %(levelname)s %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
     )
 

@@ -5,10 +5,12 @@ import logging
 import os
 import base64
 import json
+import argparse
 
 from liquid_node.collections import push_collections_titles
 from liquid_node.import_from_docker import validate_names, ensure_docker_setup_stopped, \
     add_collections_ini, import_index
+from liquid_node.jobs import wait_for_stopped_jobs
 from .collections import get_collections_to_purge, purge_collection
 from .configuration import config
 from .consul import consul
@@ -55,6 +57,11 @@ CORE_AUTH_APPS = [
         'vault_path': 'liquid/nextcloud/auth.oauth2',
         'callback': f'{config.app_url("nextcloud")}/__auth/callback',
     },
+    {
+        'name': 'hypothesis',
+        'vault_path': 'liquid/hypothesis/auth.oauth2',
+        'callback': f'{config.app_url("hypothesis")}/__auth/callback',
+    },
 ]
 
 
@@ -76,7 +83,7 @@ def ensure_secret_key(path):
 def wait_for_service_health_checks(health_checks):
     """Waits health checks to become green for green_count times in a row. """
 
-    def get_failed_checks():
+    def get_checks():
         """Generates a list of (service, check, status)
         for all failing checks after checking with Consul"""
 
@@ -92,21 +99,50 @@ def wait_for_service_health_checks(health_checks):
         for service, checks in health_checks.items():
             for check in checks:
                 status = consul_status.get((service, check), 'missing')
-                if status != 'passing':
-                    yield service, check, status
+                yield service, check, status
+
+    t0 = time()
+    last_check_timestamps = {}
+    passing_count = defaultdict(int)
+
+    def log_checks(checks, as_error=False):
+        max_service_len = max(len(s) for s in health_checks.keys())
+        max_name_len = max(max(len(name) for name in health_checks[key]) for key in health_checks)
+        now = time()
+        for service, check, status in checks:
+            last_time = last_check_timestamps.get((service, check), t0)
+            after = f'{now - last_time:+.1f}s'
+            last_check_timestamps[service, check] = now
+
+            line = f'[{time() - t0:4.1f}] {service:>{max_service_len}}: {check:<{max_name_len}} {status.upper():<8} {after:>5}'  # noqa: E501
+
+            if status == 'passing':
+                if as_error:
+                    continue
+                passing_count[service, check] += 1
+                if passing_count[service, check] > 1:
+                    line += f' #{passing_count[service, check]}'
+                log.info(line)
+            elif as_error:
+                log.error(line)
+            else:
+                log.warning(line)
 
     services = sorted(health_checks.keys())
     log.info(f"Waiting for health checks on {services}")
 
-    t0 = time()
     greens = 0
     timeout = t0 + config.wait_max + config.wait_interval * config.wait_green_count
-    last_spam = t0
+    last_checks = set(get_checks())
+    log_checks(last_checks)
     while time() < timeout:
         sleep(config.wait_interval)
-        failed = sorted(get_failed_checks())
 
-        if failed:
+        checks = set(get_checks())
+        log_checks(checks - last_checks)
+        last_checks = checks
+
+        if any(status != 'passing' for _, _, status in checks):
             greens = 0
         else:
             greens += 1
@@ -120,16 +156,8 @@ def wait_for_service_health_checks(health_checks):
         if greens == 0 and time() >= no_chance_timestamp:
             break
 
-        if time() - last_spam > 10.0:
-            failed_text = ''
-            for service, check, status in failed:
-                failed_text += f'\n - {service}: check "{check}" is {status}'
-            if failed:
-                failed_text += '\n'
-            log.debug(f'greens = {greens}, failed = {len(failed)}{failed_text}')
-            last_spam = time()
-
-    msg = f'Checks are failing after {time() - t0:.02f}s: \n - {failed_text}'
+    log_checks(checks, as_error=True)
+    msg = f'Checks are failed after {time() - t0:.02f}s.'
     raise RuntimeError(msg)
 
 
@@ -137,11 +165,12 @@ def resources():
     """Get memory and CPU usage for the deployment"""
 
     def get_all_res():
-        jobs = [nomad.parse(get_job(job.template)) for job in config.jobs]
+        jobs = [nomad.parse(get_job(job.template)) for job in config.enabled_jobs]
         for name, settings in config.collections.items():
-            for template in ['collection-migrate.nomad', 'collection.nomad']:
-                job = get_collection_job(name, settings, template)
-                jobs.append(nomad.parse(job))
+            job = get_collection_job(name, settings, 'collection.nomad')
+            jobs.append(nomad.parse(job))
+            deps_job = get_collection_job(name, settings, 'collection-deps.nomad')
+            jobs.append(nomad.parse(deps_job))
         for spec in jobs:
             yield from nomad.get_resources(spec)
 
@@ -165,13 +194,20 @@ def check_system_config():
     This checks if elasticsearch will accept our
     vm.max_map_count kernel parameter value.
     """
+    if os.uname().sysname == 'Darwin':
+        return
 
     assert int(run("sysctl -n vm.max_map_count")) >= 262144, \
         'the "vm.max_map_count" kernel parameter is too low, check readme'
 
 
-def deploy():
+def deploy(*args):
     """Run all the jobs in nomad."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--no-secrets', action='store_false', dest='secrets')
+    parser.add_argument('--no-checks', action='store_false', dest='checks')
+    options = parser.parse_args(args)
 
     check_system_config()
 
@@ -179,7 +215,8 @@ def deploy():
     consul.set_kv('liquid_debug', 'true' if config.liquid_debug else 'false')
     consul.set_kv('liquid_http_protocol', config.liquid_http_protocol)
 
-    vault.ensure_engine()
+    if options.secrets:
+        vault.ensure_engine()
 
     vault_secret_keys = [
         'liquid/liquid/core.django',
@@ -188,37 +225,41 @@ def deploy():
         'liquid/hoover/search.postgres',
         'liquid/authdemo/auth.django',
         'liquid/nextcloud/nextcloud.admin',
+        'liquid/nextcloud/nextcloud.uploads',
         'liquid/nextcloud/nextcloud.maria',
         'liquid/dokuwiki/auth.django',
         'liquid/nextcloud/auth.django',
         'liquid/rocketchat/auth.django',
+        'liquid/hypothesis/auth.django',
+        'liquid/hypothesis/hypothesis.secret_key',
+        'liquid/hypothesis/hypothesis.postgres',
         'liquid/ci/vmck.django',
         'liquid/ci/drone.secret',
     ]
     core_auth_apps = list(CORE_AUTH_APPS)
 
-    for job in config.jobs:
+    for job in config.enabled_jobs:
         vault_secret_keys += list(job.vault_secret_keys)
         core_auth_apps += list(job.core_auth_apps)
 
-    for path in vault_secret_keys:
-        ensure_secret_key(path)
+    if options.secrets:
+        for path in vault_secret_keys:
+            ensure_secret_key(path)
 
-    if config.ci_enabled:
-        vault.set('liquid/ci/drone.github', {
-            'client_id': config.ci_github_client_id,
-            'client_secret': config.ci_github_client_secret,
-            'user_filter': config.ci_github_user_filter,
-        })
-        vault.set('liquid/ci/drone.docker', {
-            'username': config.ci_docker_username,
-            'password': config.ci_docker_password,
-        })
+        if config.ci_enabled:
+            vault.set('liquid/ci/drone.github', {
+                'client_id': config.ci_github_client_id,
+                'client_secret': config.ci_github_client_secret,
+                'user_filter': config.ci_github_user_filter,
+            })
+            vault.set('liquid/ci/drone.docker', {
+                'username': config.ci_docker_username,
+                'password': config.ci_docker_password,
+            })
 
     def start(job, hcl):
-        log.info('Parsing %s...', job)
-        spec = nomad.parse(hcl)
         log.info('Starting %s...', job)
+        spec = nomad.parse(hcl)
         nomad.run(spec)
         job_checks = {}
         for service, checks in nomad.get_health_checks(spec):
@@ -228,18 +269,20 @@ def deploy():
             job_checks[service] = checks
         return job_checks
 
-    jobs = [(job.name, get_job(job.template)) for job in config.jobs]
+    jobs = [(job.name, get_job(job.template)) for job in config.enabled_jobs]
 
-    hov = hoover.Hoover()
-    database_tasks = [hov.pg_task]
+    hov_deps = hoover.Deps()
+    database_tasks = [hov_deps.pg_task]
+    deps_jobs = [(hov_deps.name, get_job(hov_deps.template))]
     for name, settings in config.collections.items():
-        migrate_job = get_collection_job(name, settings, 'collection-migrate.nomad')
-        jobs.append((f'collection-{name}-migrate', migrate_job))
         job = get_collection_job(name, settings)
         jobs.append((f'collection-{name}', job))
+        deps_job = get_collection_job(name, settings, 'collection-deps.nomad')
+        deps_jobs.append((f'collection-{name}-deps', deps_job))
         database_tasks.append('snoop-' + name + '-pg')
-        ensure_secret_key(f'liquid/collections/{name}/snoop.django')
-        ensure_secret_key(f'liquid/collections/{name}/snoop.postgres')
+        if options.secrets:
+            ensure_secret_key(f'liquid/collections/{name}/snoop.django')
+            ensure_secret_key(f'liquid/collections/{name}/snoop.postgres')
 
     ensure_secret('liquid/rocketchat/adminuser', lambda: {
         'username': 'rocketchatadmin',
@@ -248,32 +291,56 @@ def deploy():
 
     # Start liquid-core in order to setup the auth
     liquid_checks = start('liquid', dict(jobs)['liquid'])
-    wait_for_service_health_checks({'core': liquid_checks['core']})
+    if options.checks:
+        wait_for_service_health_checks({'core': liquid_checks['core']})
 
-    for app in core_auth_apps:
-        log.info('Auth %s -> %s', app['name'], app['callback'])
-        cmd = ['./manage.py', 'createoauth2app', app['name'], app['callback']]
-        containers = docker.containers([('liquid_task', 'liquid-core')])
-        container_id = first(containers, 'liquid-core containers')
-        docker_exec_cmd = ['docker', 'exec', container_id] + cmd
-        tokens = json.loads(run(docker_exec_cmd, shell=False))
-        vault.set(app['vault_path'], tokens)
+    if options.secrets:
+        for app in core_auth_apps:
+            log.info('Auth %s -> %s', app['name'], app['callback'])
+            cmd = ['./manage.py', 'createoauth2app', app['name'], app['callback']]
+            containers = docker.containers([('liquid_task', 'liquid-core')])
+            container_id = first(containers, 'liquid-core containers')
+            docker_exec_cmd = ['docker', 'exec', container_id] + cmd
+            tokens = json.loads(run(docker_exec_cmd, shell=False))
+            vault.set(app['vault_path'], tokens)
 
+    # check if there are jobs to stop
+    nomad_jobs = set(job['ID'] for job in nomad.jobs())
+    jobs_to_stop = nomad_jobs.intersection(set(job.name for job in config.disabled_jobs))
+    print(f'jobs to stop: {jobs_to_stop}')
+    if jobs_to_stop:
+        for job in jobs_to_stop:
+            nomad.stop(job)
+        wait_for_stopped_jobs(jobs_to_stop)
+
+    # only start deps jobs + hoover
     health_checks = {}
+    for job, hcl in deps_jobs:
+        job_checks = start(job, hcl)
+        health_checks.update(job_checks)
+
+    # wait for database health checks
+    if options.checks:
+        pg_checks = {k: v for k, v in health_checks.items() if k in database_tasks}
+        wait_for_service_health_checks(pg_checks)
+
+    # run the set password script
+    if options.secrets:
+        for collection in sorted(config.collections.keys()):
+            docker.exec_(f'snoop-{collection}-pg', 'sh', '/local/set_pg_password.sh')
+        docker.exec_(f'hoover-pg', 'sh', '/local/set_pg_password.sh')
+
+    # wait until all deps are healthy
+    if options.checks:
+        wait_for_service_health_checks(health_checks)
+
     for job, hcl in jobs:
         job_checks = start(job, hcl)
         health_checks.update(job_checks)
 
-    # Wait for database health checks of all collections and hoover:
-    pg_checks = {k: v for k, v in health_checks.items() if k in database_tasks}
-    wait_for_service_health_checks(pg_checks)
-
-    for collection in sorted(config.collections.keys()):
-        docker.exec_(f'snoop-{collection}-pg', 'sh', '/local/set_pg_password.sh')
-    docker.exec_(f'hoover-pg', 'sh', '/local/set_pg_password.sh')
-
     # Wait for everything else
-    wait_for_service_health_checks(health_checks)
+    if options.checks:
+        wait_for_service_health_checks(health_checks)
 
     # Run initcollection for all unregistered collections
     already_initialized = sorted(get_search_collections())
@@ -291,24 +358,47 @@ def deploy():
 def halt():
     """Stop all the jobs in nomad."""
 
-    jobs = [j.name for j in config.jobs]
+    jobs = [j.name for j in config.all_jobs]
     jobs.extend(f'collection-{name}' for name in config.collections)
+    jobs.extend(f'collection-{name}-deps' for name in config.collections)
     for job in jobs:
         log.info('Stopping %s...', job)
         nomad.stop(job)
 
 
 def gc():
-    """Stop collections jobs that are no longer declared in the ini file."""
+    """Stop all jobs that should not be running in the current deploy configuration:
+    - jobs from collections that are no longer declared in the ini file
+    - jobs from disabled applications.
+    """
+    collectionsgc()
 
-    nomad_jobs = nomad.jobs()
+    stopped_jobs = []
+    for job in config.disabled_jobs:
+        nomad.stop(job.name)
+        stopped_jobs.append(job.name)
 
-    for job in nomad_jobs:
+    wait_for_stopped_jobs(stopped_jobs)
+
+
+def collectionsgc():
+    """Stop jobs from collections that are no longer declared in the ini file."""
+
+    stopped_jobs = []
+    for job in nomad.jobs():
         if job['ID'].startswith('collection-'):
-            collection_name = job['ID'][len('collection-'):]
+            collection_name = job['ID'].split('-')[1]
             if collection_name not in config.collections and job['Status'] == 'running':
                 log.info('Stopping %s...', job['ID'])
                 nomad.stop(job['ID'])
+                stopped_jobs.append(job['ID'])
+
+    wait_for_stopped_jobs(stopped_jobs)
+
+
+def nomadgc():
+    """Remove dead jobs from nomad"""
+    nomad.gc()
 
 
 def nomad_address():

@@ -11,14 +11,23 @@ job "nextcloud-migrate" {
     ${ continuous_reschedule() }
 
     task "script" {
+      constraint {
+        attribute = "{% raw %}${meta.liquid_volumes}{% endraw %}"
+        operator = "is_set"
+      }
+      constraint {
+        attribute = "{% raw %}${meta.liquid_collections}{% endraw %}"
+        operator = "is_set"
+      }
+
       ${ task_logs() }
 
       driver = "docker"
       config {
         image = "${config.image('liquid-nextcloud')}"
         volumes = [
-          "${liquid_volumes}/nextcloud/nextcloud:/var/www/html",
-          "${liquid_collections}/uploads/data:/var/www/html/data/uploads/files",
+          "{% raw %}${meta.liquid_volumes}{% endraw %}/nextcloud/nextcloud:/var/www/html",
+          "{% raw %}${meta.liquid_collections}{% endraw %}/uploads/data:/var/www/html/data/uploads/files",
         ]
         args = ["sudo", "-Eu", "www-data", "bash", "/local/setup.sh"]
         labels {
@@ -41,7 +50,9 @@ job "nextcloud-migrate" {
         {{- end }}
         NEXTCLOUD_HOST = "nextcloud.{{ key "liquid_domain" }}"
         NEXTCLOUD_ADMIN_USER = "admin"
-        NEXTCLOUD_ADMIN_PASSWORD = "admin"
+        {{- with secret "liquid/nextcloud/nextcloud.admin" }}
+          NEXTCLOUD_ADMIN_PASSWORD = {{.Data.secret_key | toJSON }}
+        {{- end }}
         {{- range service "nextcloud-maria" }}
           MYSQL_HOST = "{{.Address}}:{{.Port}}"
         {{- end }}
@@ -50,8 +61,8 @@ job "nextcloud-migrate" {
         {{- with secret "liquid/nextcloud/nextcloud.maria" }}
           MYSQL_PASSWORD = {{.Data.secret_key | toJSON }}
         {{- end }}
-        {{- with secret "liquid/nextcloud/nextcloud.admin" }}
-          OC_PASS = {{.Data.secret_key | toJSON }}
+        {{- with secret "liquid/nextcloud/nextcloud.uploads" }}
+          UPLOADS_USER_PASSWORD = {{.Data.secret_key | toJSON }}
         {{- end }}
         TIMESTAMP = "${config.timestamp}"
         EOF

@@ -7,11 +7,16 @@ job "rocketchat" {
 
   group "db" {
     task "mongo" {
+      constraint {
+        attribute = "{% raw %}${meta.liquid_volumes}{% endraw %}"
+        operator = "is_set"
+      }
+
       driver = "docker"
       config {
         image = "mongo:3.2"
         volumes = [
-          "${liquid_volumes}/rocketchat/mongo/data:/data/db",
+          "{% raw %}${meta.liquid_volumes}{% endraw %}/rocketchat/mongo/data:/data/db",
         ]
         args = ["mongod", "--smallfiles", "--replSet", "rs01"]
         labels {
@@ -23,7 +28,7 @@ job "rocketchat" {
       }
       resources {
         memory = 500
-        cpu = 400
+        cpu = 200
         network {
           mbits = 1
           port "mongo" {}
@@ -33,7 +38,7 @@ job "rocketchat" {
         name = "rocketchat-mongo"
         port = "mongo"
         check {
-          name = "rocketchat-mongo alive on tcp"
+          name = "tcp"
           initial_status = "critical"
           type = "tcp"
           interval = "${check_interval}"
@@ -105,16 +110,18 @@ job "rocketchat" {
           var fs = require('fs');
           var dotenv = ('' + fs.readFileSync('/local/liquid.env')).trim();
           for (const a of dotenv.split(/\n/)) {
-            [_,k,v]=a.trim().match(/^([^=]+)=(.*)/);
-            process.env[k]=v;
+            [_,k,v] = a.trim().match(/^([^=]+)=(.*)/);
+            var noquotes = v.match(/^"(.*)"$/);
+            if (noquotes) v = noquotes[1];
+            process.env[k] = v;
           }
           require('/app/bundle/main.js');
         EOF
         destination = "local/main.js"
       }
       resources {
-        memory = 800
-        cpu = 400
+        memory = 1500
+        cpu = 300
         network {
           mbits = 1
           port "web" {}
@@ -124,7 +131,7 @@ job "rocketchat" {
         name = "rocketchat-app"
         port = "web"
         check {
-          name = "rocketchat alive on http"
+          name = "http"
           initial_status = "critical"
           type = "http"
           path = "/"
@@ -142,5 +149,7 @@ job "rocketchat" {
       'rocketchat',
       host='rocketchat.' + liquid_domain,
       upstream='rocketchat-app',
+      threads=150,
+      memory=500,
     ) }
 }

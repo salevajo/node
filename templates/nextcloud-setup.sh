@@ -29,8 +29,12 @@ if [ "$INSTALLED" == "false" ]; then
             --admin-user=$NEXTCLOUD_ADMIN_USER \
             --admin-pass=$NEXTCLOUD_ADMIN_PASSWORD
 
+    (
+    set +x
+    export OC_PASS="$UPLOADS_USER_PASSWORD"
     php occ user:add --password-from-env --display-name="uploads" uploads
     php occ config:system:set trusted_domains 0 --value '*'
+    )
 
     echo "Installation successful -- now restarting (aka failing) the migrate job"
     exit 66
@@ -39,15 +43,21 @@ elif [ "$INSTALLED" == "null" ]; then
     sleep 6
     exit 1
 fi
-
-
+(
+set +x
+export OC_PASS="$UPLOADS_USER_PASSWORD"
+php occ user:resetpassword --password-from-env uploads
+export OC_PASS="$NEXTCLOUD_ADMIN_PASSWORD"
+php occ user:resetpassword --password-from-env $NEXTCLOUD_ADMIN_USER
+)
+echo "uploads and admin password set
+"
 echo "Unpacking theme"
 
 rm -rf /var/www/html/themes/liquid || true
 cp -r /liquid/theme /var/www/html/themes/liquid
 chown -R www-data:www-data /var/www/html/themes/liquid
 chmod g+s /var/www/html/themes/liquid
-
 
 echo "Configuring..."
 
@@ -61,6 +71,10 @@ php occ config:system:set overwriteprotocol --value $HTTP_PROTO
 php occ config:system:set htaccess.RewriteBase --value '/'
 php occ config:system:set skeletondirectory --value ''
 php occ config:system:set updatechecker --value false --type boolean
+
+#install contacts before shutting down the app store
+php occ app:install contacts || true
+
 php occ config:system:set has_internet_connection --value false --type boolean
 php occ config:system:set appstoreenabled --value false --type boolean
 
@@ -85,3 +99,6 @@ php occ app:disable systemtags
 php occ app:disable updatenotification
 
 echo "Configuration done"
+
+# scan the filesystem in case there are files initially (redeploy e.g.)
+php occ files:scan

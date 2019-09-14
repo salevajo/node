@@ -3,103 +3,7 @@
 job "collection-${name}" {
   datacenters = ["dc1"]
   type = "service"
-  priority = 60
-
-  group "queue" {
-    ${ group_disk() }
-
-    task "rabbitmq" {
-      ${ task_logs() }
-
-      driver = "docker"
-      config {
-        image = "rabbitmq:3.7.3"
-        volumes = [
-          "${liquid_volumes}/collections/${name}/rabbitmq/rabbitmq:/var/lib/rabbitmq",
-        ]
-        port_map {
-          amqp = 5672
-        }
-        labels {
-          liquid_task = "snoop-${name}-rabbitmq"
-        }
-      }
-      resources {
-        memory = 700
-        cpu = 150
-        network {
-          mbits = 1
-          port "amqp" {}
-        }
-      }
-      service {
-        name = "snoop-${name}-rabbitmq"
-        port = "amqp"
-        check {
-          name = "rabbitmq alive on tcp"
-          initial_status = "critical"
-          type = "tcp"
-          interval = "${check_interval}"
-          timeout = "${check_timeout}"
-        }
-      }
-    }
-  }
-
-  group "db" {
-    ${ group_disk() }
-
-    ${ continuous_reschedule() }
-
-    task "pg" {
-      ${ task_logs() }
-
-      driver = "docker"
-      config {
-        image = "postgres:9.6"
-        volumes = [
-          "${liquid_volumes}/collections/${name}/pg/data:/var/lib/postgresql/data",
-        ]
-        labels {
-          liquid_task = "snoop-${name}-pg"
-        }
-        port_map {
-          pg = 5432
-        }
-      }
-      template {
-        data = <<EOF
-          POSTGRES_USER = "snoop"
-          POSTGRES_DATABASE = "snoop"
-          {{- with secret "liquid/collections/${name}/snoop.postgres" }}
-            POSTGRES_PASSWORD = {{.Data.secret_key | toJSON }}
-          {{- end }}
-        EOF
-        destination = "local/postgres.env"
-        env = true
-      }
-      ${ set_pg_password_template('snoop') }
-      resources {
-        cpu = 400
-        memory = 400
-        network {
-          mbits = 1
-          port "pg" {}
-        }
-      }
-      service {
-        name = "snoop-${name}-pg"
-        port = "pg"
-        check {
-          name = "postgres alive on tcp"
-          initial_status = "critical"
-          type = "tcp"
-          interval = "${check_interval}"
-          timeout = "${check_timeout}"
-        }
-      }
-    }
-  }
+  priority = 55
 
   group "workers" {
     ${ group_disk() }
@@ -107,6 +11,15 @@ job "collection-${name}" {
     count = ${workers}
 
     task "snoop" {
+      constraint {
+        attribute = "{% raw %}${meta.liquid_volumes}{% endraw %}"
+        operator = "is_set"
+      }
+      constraint {
+        attribute = "{% raw %}${meta.liquid_collections}{% endraw %}"
+        operator = "is_set"
+      }
+
       ${ task_logs() }
 
       driver = "docker"
@@ -115,10 +28,12 @@ job "collection-${name}" {
         args = ["sh", "/local/startup.sh"]
         volumes = [
           ${hoover_snoop2_repo}
-          "${liquid_volumes}/gnupg:/opt/hoover/gnupg",
-          "${liquid_collections}/${name}:/opt/hoover/collection",
-          "${liquid_volumes}/collections/${name}/blobs:/opt/hoover/snoop/blobs",
+          "{% raw %}${meta.liquid_collections}{% endraw %}/${name}:/opt/hoover/collection",
+          "{% raw %}${meta.liquid_volumes}{% endraw %}/collections/${name}/blobs:/opt/hoover/snoop/blobs",
         ]
+        port_map {
+          flower = 5555
+        }
         labels {
           liquid_task = "snoop-${name}-worker"
         }
@@ -133,15 +48,8 @@ job "collection-${name}" {
         data = <<-EOF
         #!/bin/sh
         set -ex
-        (
-        set +x
-        if [ -z "$SNOOP_DB" ]; then
-          echo "database not ready"
-          sleep 5
-          exit 1
-        fi
-        )
         if  [ -z "$SNOOP_TIKA_URL" ] \
+                || [ -z "$SNOOP_DB" ] \
                 || [ -z "$SNOOP_ES_URL" ] \
                 || [ -z "$SNOOP_AMQP_URL" ]; then
           echo "incomplete configuration!"
@@ -183,6 +91,14 @@ job "collection-${name}" {
       }
       resources {
         memory = 400
+        network {
+          mbits = 1
+          port "flower" {}
+        }
+      }
+      service {
+        name = "snoop-${name}-flower"
+        port = "flower"
       }
     }
   }
@@ -193,6 +109,15 @@ job "collection-${name}" {
     ${ continuous_reschedule() }
 
     task "snoop" {
+      constraint {
+        attribute = "{% raw %}${meta.liquid_volumes}{% endraw %}"
+        operator = "is_set"
+      }
+      constraint {
+        attribute = "{% raw %}${meta.liquid_collections}{% endraw %}"
+        operator = "is_set"
+      }
+
       ${ task_logs() }
 
       driver = "docker"
@@ -201,9 +126,8 @@ job "collection-${name}" {
         args = ["sh", "/local/startup.sh"]
         volumes = [
           ${hoover_snoop2_repo}
-          "${liquid_volumes}/gnupg:/opt/hoover/gnupg",
-          "${liquid_collections}/${name}:/opt/hoover/collection",
-          "${liquid_volumes}/collections/${name}/blobs:/opt/hoover/snoop/blobs",
+          "{% raw %}${meta.liquid_collections}{% endraw %}/${name}:/opt/hoover/collection",
+          "{% raw %}${meta.liquid_volumes}{% endraw %}/collections/${name}/blobs:/opt/hoover/snoop/blobs",
         ]
         port_map {
           http = 80
@@ -221,21 +145,18 @@ job "collection-${name}" {
         data = <<-EOF
         #!/bin/sh
         set -ex
-        (
-        set +x
-        if [ -z "$SNOOP_DB" ]; then
-          echo "database not ready"
-          sleep 5
-          exit 1
-        fi
-        )
         if  [ -z "$SNOOP_TIKA_URL" ] \
                 || [ -z "$SNOOP_ES_URL" ] \
-                || [ -z "$SNOOP_AMQP_URL" ]; then
+                || [ -z "$SNOOP_DB" ]; then
           echo "incomplete configuration!"
           sleep 5
           exit 1
         fi
+        date
+        ./manage.py migrate --noinput
+        ./manage.py healthcheck
+
+        date
         exec /runserver
         EOF
         env = false
@@ -284,8 +205,9 @@ job "collection-${name}" {
       service {
         name = "snoop-${name}"
         port = "http"
+        tags = ["snoop-/${name} strip=/${name} host=${name}.snoop.${liquid_domain}"]
         check {
-          name = "snoop alive on http"
+          name = "http"
           initial_status = "critical"
           type = "http"
           path = "/collection/json"
@@ -294,15 +216,6 @@ job "collection-${name}" {
           header {
             Host = ["${name}.snoop.${liquid_domain}"]
           }
-        }
-        check {
-          name = "snoop healthcheck script"
-          initial_status = "warning"
-          type = "script"
-          command = "python"
-          args = ["manage.py", "healthcheck"]
-          interval = "${check_interval}"
-          timeout = "${check_timeout}"
         }
       }
     }

@@ -1,23 +1,13 @@
 import logging
 import os
 from pathlib import Path
+from time import time, sleep
 
 import jinja2
 
+
 log = logging.getLogger(__name__)
 TEMPLATES = Path(__file__).parent.parent.parent.resolve() / 'templates'
-
-
-def set_collection_defaults(name, settings):
-    """Sets the collection job default options
-
-    :param name: collection name
-    :param settings: dictionary containing the collection job options
-    """
-
-    settings['name'] = name
-    settings.setdefault('workers', '1')
-    settings.setdefault('sync', 'false')
 
 
 def set_volumes_paths(substitutions={}):
@@ -58,6 +48,11 @@ def set_volumes_paths(substitutions={}):
             'local': os.path.join(config.hoover_repos_path, 'search'),
             'target': '/opt/hoover/search'
         },
+        'ui': {
+            'org': 'hoover',
+            'local': os.path.join(config.hoover_repos_path, 'ui/src'),
+            'target': '/opt/hoover/ui/src'
+        },
         'core': {
             'org': 'liquidinvestigations',
             'local': os.path.join(config.liquidinvestigations_repos_path, 'core'),
@@ -67,6 +62,16 @@ def set_volumes_paths(substitutions={}):
             'org': 'liquidinvestigations',
             'local': os.path.join(config.liquidinvestigations_repos_path, 'authproxy'),
             'target': '/app'
+        },
+        'h_h': {
+            'org': 'hypothesis',
+            'local': os.path.join(config.hypothesis_repos_path, 'h/h'),
+            'target': '/var/lib/hypothesis/h',
+        },
+        'h_conf': {
+            'org': 'hypothesis',
+            'local': os.path.join(config.hypothesis_repos_path, 'h/conf'),
+            'target': '/var/lib/hypothesis/conf',
         },
     }
 
@@ -95,8 +100,6 @@ def get_collection_job(name, settings, template='collection.nomad'):
     from ..configuration import config
 
     substitutions = dict(settings)
-    set_collection_defaults(name, substitutions)
-
     return get_job(config.templates / template, substitutions)
 
 
@@ -124,6 +127,30 @@ def get_job(hcl_path, substitutions={}):
 
     output = render(template, set_volumes_paths(substitutions))
     return output
+
+
+def wait_for_stopped_jobs(stopped_jobs):
+    from liquid_node.configuration import config
+    from liquid_node.nomad import nomad
+
+    if not stopped_jobs:
+        return
+
+    stopped_jobs = list(stopped_jobs)
+    log.info('Waiting for the following jobs to die: ' + ', '.join(stopped_jobs))
+    timeout = time() + config.wait_max
+
+    while stopped_jobs and time() < timeout:
+        sleep(config.wait_interval)
+
+        nomad_jobs = {job['ID']: job for job in nomad.jobs() if job['ID'] in stopped_jobs}
+        for job_name in stopped_jobs:
+            if job_name not in nomad_jobs or nomad_jobs[job_name]['Status'] == 'dead':
+                stopped_jobs.remove(job_name)
+                log.info(f'Job {job_name} is dead')
+
+    if stopped_jobs:
+        raise RuntimeError(f'The following jobs are still running: {stopped_jobs}')
 
 
 class Job:

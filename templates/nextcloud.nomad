@@ -7,12 +7,21 @@ job "nextcloud" {
 
   group "nc" {
     task "nextcloud" {
+      constraint {
+        attribute = "{% raw %}${meta.liquid_volumes}{% endraw %}"
+        operator = "is_set"
+      }
+      constraint {
+        attribute = "{% raw %}${meta.liquid_collections}{% endraw %}"
+        operator = "is_set"
+      }
+
       driver = "docker"
       config {
         image = "${config.image('liquid-nextcloud')}"
         volumes = [
-          "${liquid_volumes}/nextcloud/nextcloud:/var/www/html",
-          "${liquid_collections}/uploads/data:/var/www/html/data/uploads/files",
+          "{% raw %}${meta.liquid_volumes}{% endraw %}/nextcloud/nextcloud:/var/www/html",
+          "{% raw %}${meta.liquid_collections}{% endraw %}/uploads/data:/var/www/html/data/uploads/files",
         ]
         args = ["/bin/sh", "-c", "chown -R 33:33 /var/www/html/ && echo chown done && /entrypoint.sh apache2-foreground"]
         port_map {
@@ -55,8 +64,12 @@ job "nextcloud" {
       }
       template {
         data = <<-EOF
+        {{- with secret "liquid/nextcloud/nextcloud.uploads" }}
+          UPLOADS_USER_PASSWORD = {{.Data.secret_key | toJSON }}
+        {{- end }}
+        NEXTCLOUD_ADMIN = "admin"
         {{- with secret "liquid/nextcloud/nextcloud.admin" }}
-          OC_PASS = {{.Data.secret_key | toJSON }}
+          NEXTCLOUD_ADMIN_PASSWORD = {{.Data.secret_key | toJSON }}
         {{- end }}
         EOF
         destination = "local/nextcloud-migrate.env"
@@ -65,17 +78,33 @@ job "nextcloud" {
       service {
         name = "nextcloud"
         port = "http"
+        check {
+          name = "http"
+          initial_status = "critical"
+          type = "http"
+          path = "/status.php"
+          interval = "${check_interval}"
+          timeout = "${check_timeout}"
+          header {
+            Host = ["nextcloud.${liquid_domain}"]
+          }
+        }
       }
     }
   }
 
   group "db" {
-    task "pg" {
+    task "maria" {
+      constraint {
+        attribute = "{% raw %}${meta.liquid_volumes}{% endraw %}"
+        operator = "is_set"
+      }
+
       driver = "docker"
       config {
         image = "postgres:9.6"
         volumes = [
-          "${liquid_volumes}/nextcloud/pg/data:/var/lib/postgresql/data",
+          "{% raw %}${meta.liquid_volumes}{% endraw %}/nextcloud/mysql:/var/lib/mysql",
         ]
         labels {
           liquid_task = "nextcloud-pg"
@@ -105,8 +134,15 @@ job "nextcloud" {
         }
       }
       service {
-        name = "nextcloud-pg"
-        port = "pg"
+        name = "nextcloud-maria"
+        port = "maria"
+        check {
+          name = "tcp"
+          initial_status = "critical"
+          type = "tcp"
+          interval = "${check_interval}"
+          timeout = "${check_timeout}"
+        }
       }
     }
   }
