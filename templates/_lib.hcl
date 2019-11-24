@@ -14,7 +14,7 @@ ephemeral_disk {
 }
 {%- endmacro %}
 
-{%- macro authproxy_group(name, host, upstream, threads=4, memory=150, user_header_template="{}") %}
+{%- macro authproxy_group(name, host, upstream, threads=24, memory=200, user_header_template="{}", count=1) %}
   group "authproxy" {
     restart {
       interval = "2m"
@@ -22,6 +22,8 @@ ephemeral_disk {
       delay = "20s"
       mode = "delay"
     }
+
+    count = ${count}
 
     task "web" {
       driver = "docker"
@@ -39,14 +41,11 @@ ephemeral_disk {
       }
       template {
         data = <<-EOF
-          {{- range service "${upstream}" }}
-            UPSTREAM_APP_URL = "http://{{.Address}}:{{.Port}}"
-          {{- end }}
+          CONSUL_URL = ${consul_url|tojson}
+          UPSTREAM_SERVICE = ${upstream|tojson}
           DEBUG = {{key "liquid_debug" | toJSON }}
           USER_HEADER_TEMPLATE = ${user_header_template|tojson}
-          {{- range service "core" }}
-            LIQUID_INTERNAL_URL = "http://{{.Address}}:{{.Port}}"
-          {{- end }}
+          LIQUID_CORE_SERVICE = "core"
           LIQUID_PUBLIC_URL = "${config.liquid_http_protocol}://{{key "liquid_domain"}}"
           {{- with secret "liquid/${name}/auth.django" }}
             SECRET_KEY = {{.Data.secret_key | toJSON }}
@@ -80,8 +79,8 @@ ephemeral_disk {
           initial_status = "critical"
           type = "http"
           path = "/__auth/logout"
-          interval = "${check_interval}"
-          timeout = "${check_timeout}"
+          interval = "3s"
+          timeout = "2s"
         }
       }
     }
@@ -112,6 +111,7 @@ ephemeral_disk {
       config {
         image = "grafana/promtail:master"
         args = ["-config.file", "local/config.yaml"]
+        dns_servers = ["{%raw%}${attr.unique.network.ip-address}{%endraw%}"]
       }
 
       template {
@@ -120,7 +120,7 @@ ephemeral_disk {
           positions:
             filename: /tmp/positions.yaml
           client:
-            url: http://{{ env "attr.unique.network.ip-address" }}:3100/api/prom/push
+            url: http://cluster-fabio.service.consul:9990/loki/api/prom/push
           scrape_configs:
           - job_name: system
             entry_parser: raw

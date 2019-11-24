@@ -52,6 +52,11 @@ job "nextcloud" {
         env = true
       }
       resources {
+<<<<<<< HEAD
+=======
+        cpu = 100
+        memory = ${config.nextcloud_memory_limit}
+>>>>>>> 7bcdc76844f2d828197b4d21ff0c412121fee39b
         network {
           mbits = 1
           port "http" {}
@@ -154,7 +159,15 @@ job "nextcloud" {
   ${- authproxy_group(
       'nextcloud',
       host='nextcloud.' + liquid_domain,
+<<<<<<< HEAD
       upstream='nextcloud',
   )}
+=======
+      upstream='nextcloud-app',
+      threads=100,
+      memory=850,
+      count=3,
+    ) }
+>>>>>>> 7bcdc76844f2d828197b4d21ff0c412121fee39b
 
 }

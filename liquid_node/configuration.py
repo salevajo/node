@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .util import import_string
 from liquid_node.jobs import ci, Job, liquid, hoover, dokuwiki, rocketchat, \
-    nextcloud, hypothesis
+    nextcloud, hypothesis, codimd
 
 
 class Configuration:
@@ -33,14 +33,16 @@ class Configuration:
             hoover.Hoover(),
             hoover.Ui(),
             hoover.Deps(),
+            hoover.System(),
             dokuwiki.Dokuwiki(),
-            dokuwiki.Migrate(),
             rocketchat.Rocketchat(),
             rocketchat.Migrate(),
             nextcloud.Nextcloud(),
             nextcloud.Migrate(),
+            nextcloud.Periodic(),
             hypothesis.Hypothesis(),
             hypothesis.UserSync(),
+            codimd.Codimd(),
         ]
         self.enabled_jobs = [job for job in self.all_jobs if self.is_app_enabled(job.app)]
         self.disabled_jobs = [job for job in self.all_jobs if not self.is_app_enabled(job.app)]
@@ -112,17 +114,28 @@ class Configuration:
         self.elasticsearch_heap_size = self.ini.getint('liquid', 'elasticsearch_heap_size',
                                                        fallback=1024)
         self.elasticsearch_memory_limit = self.ini.getint('liquid', 'elasticsearch_memory_limit',
-                                                          fallback=2048)
+                                                          fallback=1536)
+        self.elasticsearch_data_node_count = self.ini.getint('liquid', 'elasticsearch_data_node_count', fallback=0)  # noqa: E501
 
+        self.tika_count = self.ini.get('liquid', 'tika_count', fallback=1)
         self.tika_memory_limit = self.ini.get('liquid', 'tika_memory_limit', fallback=800)
+
+        self.hypothesis_memory_limit = \
+            self.ini.getint('liquid',
+                            'hypothesis_memory_limit',
+                            fallback=1024)
+        self.nextcloud_memory_limit = \
+            self.ini.getint('liquid',
+                            'nextcloud_memory_limit',
+                            fallback=512)
 
         self.hoover_ratelimit_user = self.ini.get('liquid', 'hoover_ratelimit_user', fallback='30,60')
 
-        self.check_interval = self.ini.get('deploy', 'check_interval', fallback='3s')
-        self.check_timeout = self.ini.get('deploy', 'check_timeout', fallback='2s')
+        self.check_interval = self.ini.get('deploy', 'check_interval', fallback='11s')
+        self.check_timeout = self.ini.get('deploy', 'check_timeout', fallback='9s')
         self.wait_max = self.ini.getfloat('deploy', 'wait_max_sec', fallback=300)
         self.wait_interval = self.ini.getfloat('deploy', 'wait_interval', fallback=1)
-        self.wait_green_count = self.ini.getint('deploy', 'wait_green_count', fallback=10)
+        self.wait_green_count = self.ini.getint('deploy', 'wait_green_count', fallback=8)
 
         self.ci_enabled = 'ci' in self.ini
         if self.ci_enabled:

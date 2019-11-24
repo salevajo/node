@@ -157,7 +157,7 @@ job "hypothesis" {
 
       driver = "docker"
       config = {
-        image = "hypothesis/hypothesis"
+        image = "${config.image('hypothesis-h')}"
         entrypoint = ["/local/entrypoint"]
         labels {
           liquid_task = "hypothesis-h"
@@ -210,7 +210,7 @@ job "hypothesis" {
           {{- range service "hypothesis-es" }}
           ELASTICSEARCH_URL = "http://{{.Address}}:{{.Port}}"
           {{- end }}
-
+          
           {{- range service "hypothesis-pg" }}
             DATABASE_URL = "postgresql://hypothesis:
             {{- with secret "liquid/hypothesis/hypothesis.postgres" -}}
@@ -218,11 +218,11 @@ job "hypothesis" {
             {{- end -}}
             @{{.Address}}:{{.Port}}/hypothesis"
           {{- end }}
-
+          
           {{- range service "hypothesis-rabbitmq" }}
           BROKER_URL = "amqp://guest:guest@{{.Address}}:{{.Port}}//"
           {{- end }}
-
+          
           APP_URL = "${config.liquid_http_protocol}://hypothesis.${liquid_domain}"
           CLIENT_URL = "${config.liquid_http_protocol}://client.hypothesis.${liquid_domain}"
           PROXY_AUTH = "true"
@@ -230,12 +230,14 @@ job "hypothesis" {
           {{- with secret "liquid/hypothesis/hypothesis.secret_key" }}
             SECRET_KEY = {{.Data.secret_key|toJSON}}
           {{- end }}
-
+          
           {{- if keyExists "liquid_debug" }}
           PYRAMID_DEBUG_ALL = "true"
           PYRAMID_RELOAD_TEMPLATES = "true"
           {{- end }}
-
+          
+          LIQUID_URL = "${config.liquid_http_protocol}://${liquid_domain}"
+          LIQUID_TITLE = "${config.liquid_title}"
           EOF
 
         destination = "local/h.env"
@@ -275,7 +277,7 @@ job "hypothesis" {
           destination = "local/usersync.py"
       }
       resources {
-        memory = 1000
+        memory = ${config.hypothesis_memory_limit}
         cpu = 200
         network {
           mbits = 1
@@ -295,6 +297,14 @@ job "hypothesis" {
           header {
             Host = ["hypothesis.${liquid_domain}"]
           }
+        }
+        check {
+          name = "check-workers-script"
+          type = "script"
+          command = "/bin/sh"
+          args = ["-c", "ps aux -o comm,args | grep '^python .* celery worker'"]
+          interval = "${check_interval}"
+          timeout = "${check_timeout}"
         }
       }
     }

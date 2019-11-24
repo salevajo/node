@@ -58,6 +58,16 @@ CORE_AUTH_APPS = [
         'callback': f'{config.app_url("nextcloud")}/__auth/callback',
     },
     {
+        'name': 'codimd-app',
+        'vault_path': 'liquid/codimd/app.auth.oauth2',
+        'callback': f'{config.app_url("codimd")}/auth/oauth2/callback',
+    },
+    {
+        'name': 'codimd-authproxy',
+        'vault_path': 'liquid/codimd/auth.oauth2',
+        'callback': f'{config.app_url("codimd")}/__auth/callback',
+    },
+    {
         'name': 'hypothesis',
         'vault_path': 'liquid/hypothesis/auth.oauth2',
         'callback': f'{config.app_url("hypothesis")}/__auth/callback',
@@ -83,6 +93,14 @@ def ensure_secret_key(path):
 def wait_for_service_health_checks(health_checks):
     """Waits health checks to become green for green_count times in a row. """
 
+    def pick_worst(a, b):
+        if not a and not b:
+            return 'missing'
+        for s in ['critical', 'warning', 'passing']:
+            if s in [a, b]:
+                return s
+        raise RuntimeError(f'Unknown status: "{a}" and "{b}"')
+
     def get_checks():
         """Generates a list of (service, check, status)
         for all failing checks after checking with Consul"""
@@ -91,10 +109,7 @@ def wait_for_service_health_checks(health_checks):
         for service in health_checks:
             for s in consul.get(f'/health/checks/{service}'):
                 key = service, s['Name']
-                if key in consul_status:
-                    consul_status[key] = 'appears twice. Maybe halt, restart Consul and try again?'
-                    continue
-                consul_status[key] = s['Status']
+                consul_status[key] = pick_worst(s['Status'], consul_status.get(key))
 
         for service, checks in health_checks.items():
             for check in checks:
@@ -233,6 +248,9 @@ def deploy(*args):
         'liquid/hypothesis/auth.django',
         'liquid/hypothesis/hypothesis.secret_key',
         'liquid/hypothesis/hypothesis.postgres',
+        'liquid/codimd/auth.django',
+        'liquid/codimd/codimd.session',
+        'liquid/codimd/codimd.postgres',
         'liquid/ci/vmck.django',
         'liquid/ci/drone.secret',
     ]
@@ -549,3 +567,25 @@ def getsecret(path=None):
         for section in vault.list():
             for key in vault.list(section):
                 print(f'{section}{key}')
+
+
+def launchocr(*args):
+    """Launch either a batch or a daily batch OCR process."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('name', help='collection name')
+    parser.add_argument('--periodic', dest='periodic', help='cron expression')
+    parser.add_argument('--workers', dest='workers', help='worker process count')
+    parser.add_argument('--threads_per_worker', dest='threads_per_worker', help='default and max value is 4.')
+    parser.add_argument('--nice', dest='nice', help='argument to `nice -n`.')
+    options = parser.parse_args(args)
+
+    assert options.name in config.collections, 'unknown collection name: ' + options.name
+    data_dir = Path(config.liquid_collections) / options.name / 'data'
+    assert data_dir.is_dir(), \
+        f'{data_dir} should be a directory where all collection data is stored.'
+
+    hcl = get_collection_job(options.name, vars(options), 'collection-ocr.nomad')
+    spec = nomad.parse(hcl)
+    nomad.run(spec)
+    log.info(f'Launched OCR job {spec["Name"]}')
