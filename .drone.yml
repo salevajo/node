@@ -7,42 +7,23 @@ steps:
   commands:
   - pip install flake8 > /dev/null
   - flake8
-- name: deploy to qemu
-  image: vmck/vagrant-vmck:0.2.1
-  commands:
-  - export VMCK_URL=http://$VMCK_IP:$VMCK_PORT
-  - export VMCK_NAME="drone $DRONE_REPO:$DRONE_BRANCH#$DRONE_BUILD_NUMBER"
-  - vagrant/deploy-vmck
 
 ---
 kind: pipeline
-name: deploy to demo
+name: qemu
 
-steps:
-- name: do it
-  image: docker
-  privileged: true
-  volumes:
-  - name: docker-sock
-    path: /var/run/docker.sock
-  commands:
-  - while docker ps deploy-demo; do sleep 5 && echo waiting; done
-  - CONTAINER=$(./vagrant/launch-deploy-demo-container)
-  - docker logs -f $CONTAINER &
-  - sleep 10
+# magic undocumented feature!
+# https://discourse.drone.io/t/how-to-limit-build-concurrency-per-project/3500
+concurrency:
+  limit: 2
 
 depends_on:
 - test
 
-trigger:
-  status:
-  - success
-  branch:
-  - master
-  event:
-  - push
-
-volumes:
-- name: docker-sock
-  host:
-      path: /var/run/docker.sock
+steps:
+- name: deploy to qemu
+  image: vmck/vagrant-vmck:0.4.1
+  commands:
+  - export VMCK_URL=http://$VMCK_IP:$VMCK_PORT
+  - export VMCK_NAME="drone $DRONE_REPO:$DRONE_BRANCH#$DRONE_BUILD_NUMBER"
+  - vagrant/deploy-vmck

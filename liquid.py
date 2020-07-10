@@ -6,8 +6,7 @@ import sys
 import logging
 import argparse
 from liquid_node import commands
-from urllib.error import HTTPError
-
+from liquid_node import backup
 
 import colorlog
 
@@ -39,16 +38,13 @@ def main():
         commands.nomad_address,
         commands.deploy,
         commands.resources,
-        commands.gc,
-        commands.collectionsgc,
         commands.nomadgc,
         commands.halt,
-        commands.initcollection,
-        commands.deletecollection,
-        commands.purge,
         commands.getsecret,
-        commands.importfromdockersetup,
-        commands.launchocr,
+        backup.backup,
+        backup.restore_collection,
+        backup.restore_all_collections,
+        backup.restore_apps,
     ])
     (options, extra_args) = parser.parse_known_args()
     options.cmd(*extra_args)
@@ -69,6 +65,6 @@ if __name__ == '__main__':
 
     try:
         main()
-    except HTTPError as e:
-        log.exception("HTTP Error %r: %r", e, e.file.read())
-        sys.exit(1)
+    except Exception as e:
+        log.exception(e)
+        sys.exit(66)

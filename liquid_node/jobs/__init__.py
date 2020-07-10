@@ -2,6 +2,7 @@ import logging
 import os
 from pathlib import Path
 from time import time, sleep
+from ..docker import docker
 
 import jinja2
 
@@ -28,8 +29,9 @@ def set_volumes_paths(substitutions={}):
     substitutions['liquid_2fa'] = config.liquid_2fa
     substitutions['check_interval'] = config.check_interval
     substitutions['check_timeout'] = config.check_timeout
-    substitutions['consul_socket'] = os.path.realpath(config.consul_socket)
     substitutions['consul_url'] = config.consul_url
+
+    substitutions['exec_command'] = docker.exec_command_str
 
     substitutions['https_enabled'] = config.https_enabled
     if config.https_enabled:
@@ -93,21 +95,6 @@ def set_volumes_paths(substitutions={}):
     return substitutions
 
 
-def get_collection_job(name, settings, template='collection.nomad'):
-    """Return the collection job description
-
-    :param name: collection name
-    :param settings: dictionary containing the collection job options
-    :returns: collection job description
-    :rtype: str
-    """
-
-    from ..configuration import config
-
-    substitutions = dict(settings)
-    return get_job(config.templates / template, substitutions)
-
-
 def render(template, subs):
     from ..configuration import config
 
@@ -116,6 +103,8 @@ def render(template, subs):
         variable_end_string="}",
         loader=jinja2.FileSystemLoader(str(config.templates)),
     )
+    env.globals['int'] = int
+    env.globals['max'] = max
     return env.from_string(template).render(subs)
 
 

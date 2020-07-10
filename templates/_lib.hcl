@@ -1,21 +1,42 @@
 {%- macro continuous_reschedule() %}
+    restart {
+      attempts = 5
+      delay    = "11s"
+      interval = "3m"
+      mode     = "fail"
+    }
+    reschedule {
+      attempts       = 0
+      delay          = "11s"
+      delay_function = "exponential"
+      max_delay      = "19m"
+      unlimited      = true
+    }
+{%- endmacro %}
+
+{%- macro shutdown_delay() %}
+      shutdown_delay = "0s"
+      kill_timeout = "29s"
 {%- endmacro %}
 
 {%- macro task_logs() %}
 logs {
-  max_files     = 5
-  max_file_size = 1
+  max_files     = 3
+  max_file_size = 3
 }
 {%- endmacro %}
 
-{%- macro group_disk(size=50) %}
+{%- macro group_disk(size=20) %}
 ephemeral_disk {
   size = ${size}
 }
 {%- endmacro %}
 
-{%- macro authproxy_group(name, host, upstream, threads=24, memory=200, user_header_template="{}", count=1) %}
+{%- macro authproxy_group(name, host, upstream, threads=24, memory=300, user_header_template="{}", count=1) %}
   group "authproxy" {
+    ${ group_disk() }
+    spread { attribute = {% raw %}"${attr.unique.hostname}"{% endraw %} }
+
     restart {
       interval = "2m"
       attempts = 4
@@ -26,6 +47,8 @@ ephemeral_disk {
     count = ${count}
 
     task "web" {
+      ${ task_logs() }
+
       driver = "docker"
       config {
         image = "${config.image('liquid-authproxy')}"
@@ -79,13 +102,15 @@ ephemeral_disk {
           initial_status = "critical"
           type = "http"
           path = "/__auth/logout"
-          interval = "3s"
-          timeout = "2s"
+          interval = "6s"
+          timeout = "3s"
+        }
+        check_restart {
+          limit = 3
+          grace = "25s"
         }
       }
     }
-
-    ${ promtail_task() }
   }
 {%- endmacro %}
 
@@ -101,43 +126,3 @@ ephemeral_disk {
     destination = "local/set_pg_password.sh"
   }
 {%- endmacro %}
-
-{% macro promtail_task() %}
-    task "promtail" {
-      driver = "docker"
-
-      ${ task_logs() }
-
-      config {
-        image = "grafana/promtail:master"
-        args = ["-config.file", "local/config.yaml"]
-        dns_servers = ["{%raw%}${attr.unique.network.ip-address}{%endraw%}"]
-      }
-
-      template {
-        destination = "local/config.yaml"
-        data = <<-EOH
-          positions:
-            filename: /tmp/positions.yaml
-          client:
-            url: http://cluster-fabio.service.consul:9990/loki/api/prom/push
-          scrape_configs:
-          - job_name: system
-            entry_parser: raw
-            static_configs:
-            - targets:
-                - localhost
-              labels:
-                job: {{ env "NOMAD_JOB_NAME" }}
-                group: {{ env "NOMAD_GROUP_NAME" }}
-                __path__: /alloc/logs/*
-          EOH
-      }
-
-      resources {
-        cpu = 50
-        memory = 32
-        network { mbits = 1 }
-      }
-    }
-{% endmacro %}

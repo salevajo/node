@@ -1,18 +1,23 @@
-{% from '_lib.hcl' import authproxy_group, continuous_reschedule, promtail_task with context -%}
+{% from '_lib.hcl' import shutdown_delay, authproxy_group, continuous_reschedule, group_disk, task_logs with context -%}
 
 job "rocketchat" {
   datacenters = ["dc1"]
   type = "service"
   priority = 30
 
+  spread { attribute = {% raw %}"${attr.unique.hostname}"{% endraw %} }
+
   group "db" {
+    ${ group_disk() }
     task "mongo" {
+      ${ task_logs() }
       constraint {
         attribute = "{% raw %}${meta.liquid_volumes}{% endraw %}"
         operator = "is_set"
       }
 
       driver = "docker"
+      ${ shutdown_delay() }
       config {
         image = "mongo:3.2"
         volumes = [
@@ -46,14 +51,14 @@ job "rocketchat" {
         }
       }
     }
-
-    ${ promtail_task() }
   }
 
   group "app" {
     ${ continuous_reschedule() }
+    ${ group_disk() }
 
     task "rocketchat" {
+      ${ task_logs() }
       driver = "docker"
       config {
         image = "rocket.chat:1.1.1"
@@ -136,7 +141,7 @@ job "rocketchat" {
           name = "http"
           initial_status = "critical"
           type = "http"
-          path = "/"
+          path = "/api/info"
           interval = "${check_interval}"
           timeout = "${check_timeout}"
           header {
@@ -149,15 +154,14 @@ job "rocketchat" {
         }
       }
     }
-
-    ${ promtail_task() }
   }
 
   ${- authproxy_group(
       'rocketchat',
       host='rocketchat.' + liquid_domain,
       upstream='rocketchat-app',
-      threads=200,
+      threads=50,
       memory=500,
+      count=3,
     ) }
 }

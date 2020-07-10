@@ -1,12 +1,18 @@
 import configparser
 import time
-from collections import OrderedDict
 from distutils.util import strtobool
 from pathlib import Path
 
 from .util import import_string
 from liquid_node.jobs import ci, Job, liquid, hoover, dokuwiki, rocketchat, \
     nextcloud, hypothesis, codimd
+
+
+def split_lang_codes(option):
+    option = option.strip()
+    if not option:
+        return []
+    return option.split(',')
 
 
 class Configuration:
@@ -33,7 +39,6 @@ class Configuration:
             hoover.Hoover(),
             hoover.Ui(),
             hoover.Deps(),
-            hoover.System(),
             dokuwiki.Dokuwiki(),
             rocketchat.Rocketchat(),
             rocketchat.Migrate(),
@@ -48,7 +53,6 @@ class Configuration:
         self.disabled_jobs = [job for job in self.all_jobs if not self.is_app_enabled(job.app)]
 
         self.consul_url = self.ini.get('cluster', 'consul_url', fallback='http://127.0.0.1:8500')
-        self.consul_socket = self.ini.get('cluster', 'consul_socket')
 
         self.vault_url = self.ini.get('cluster', 'vault_url', fallback='http://127.0.0.1:8200')
 
@@ -102,7 +106,7 @@ class Configuration:
             )
 
         else:
-            self.liquid_http_protocol = 'http'
+            self.liquid_http_protocol = self.ini.get('liquid', 'http_protocol_override', fallback='http')
         self.liquid_core_url = f'{self.liquid_http_protocol}://{self.liquid_domain}'
 
         self.auth_staff_only = self.ini.getboolean('liquid', 'auth_staff_only', fallback=False)
@@ -131,6 +135,19 @@ class Configuration:
 
         self.hoover_ratelimit_user = self.ini.get('liquid', 'hoover_ratelimit_user', fallback='30,60')
 
+        self.hoover_authproxy_memory_limit = self.ini.getint('liquid',
+                                                             'hoover_authproxy_memory_limit', fallback=500)
+        self.hoover_web_memory_limit = self.ini.getint('liquid',
+                                                       'hoover_web_memory_limit', fallback=300)
+        self.hoover_web_count = self.ini.getint('liquid',
+                                                'hoover_web_count', fallback=2)
+
+        self.snoop_workers = self.ini.getint('snoop', 'workers', fallback=1)
+        self.snoop_rabbitmq_memory_limit = self.ini.getint('snoop', 'rabbitmq_memory_limit', fallback=700)
+        self.snoop_postgres_memory_limit = self.ini.getint('snoop', 'postgres_memory_limit', fallback=1600)
+        self.snoop_worker_memory_limit = self.ini.getint('snoop', 'worker_memory_limit', fallback=800)
+        self.snoop_worker_process_count = self.ini.getint('snoop', 'worker_process_count', fallback=4)
+
         self.check_interval = self.ini.get('deploy', 'check_interval', fallback='11s')
         self.check_timeout = self.ini.get('deploy', 'check_timeout', fallback='9s')
         self.wait_max = self.ini.getfloat('deploy', 'wait_max_sec', fallback=300)
@@ -156,7 +173,7 @@ class Configuration:
                 self.ci_docker_registry_env = ''
             self.enabled_jobs.append(ci.Drone())
 
-        self.collections = OrderedDict()
+        self.snoop_collections = []
         for key in self.ini:
             if ':' not in key:
                 continue
@@ -165,11 +182,12 @@ class Configuration:
 
             if cls == 'collection':
                 Configuration._validate_collection_name(name)
-                self.collections[name] = {
+                self.snoop_collections.append({
                     'name': name,
-                    'workers': self.ini.getint(key, 'workers', fallback=0),
+                    'process': self.ini.getboolean(key, 'process', fallback=False),
                     'sync': self.ini.getboolean(key, 'sync', fallback=False),
-                }
+                    'ocr_languages': split_lang_codes(self.ini.get(key, 'ocr_languages', fallback='')),
+                })
 
             elif cls == 'job':
                 self.enabled_jobs.append(self.load_job(name, self.ini[key]))

@@ -1,4 +1,4 @@
-{% from '_lib.hcl' import authproxy_group, promtail_task with context -%}
+{% from '_lib.hcl' import shutdown_delay, authproxy_group, task_logs, group_disk with context -%}
 
 job "codimd" {
   datacenters = ["dc1"]
@@ -6,7 +6,16 @@ job "codimd" {
   priority = 66
 
   group "codimd" {
+    ${ group_disk() }
     task "codimd" {
+      ${ task_logs() }
+
+      # for the image uploads directory
+      constraint {
+        attribute = "{% raw %}${meta.liquid_volumes}{% endraw %}"
+        operator = "is_set"
+      }
+
       leader = true
       driver = "docker"
       config {
@@ -18,6 +27,7 @@ job "codimd" {
           liquid_task = "codimd"
         }
         volumes = [
+          "{% raw %}${meta.liquid_volumes}{% endraw %}/codimd/image-uploads:/codimd/public/uploads",
           ${liquidinvestigations_codimd_server_repo}
         ]
       }
@@ -31,10 +41,12 @@ job "codimd" {
       }
       env {
         NODE_ENV = "production"
-        TITLE = "${config.liquid_title}"
+        LIQUID_URL = "${config.liquid_http_protocol}://${liquid_domain}"
+        LIQUID_TITLE = "${config.liquid_title}"
         CMD_HOST = "0.0.0.0"
         CMD_PORT = "3000"
         CMD_DOMAIN = "codimd.${liquid_domain}"
+        CMD_URL_ADDPORT = "{% if config.https_enabled %}${ liquid_https_port }{% else %}${ liquid_http_port }{% endif %}"
         CMD_PROTOCOL_USESSL = "{% if config.https_enabled %}true{% else %}false{% endif %}"
         CMD_ALLOW_ORIGIN = "codimd.${liquid_domain}"
         CMD_USECDN = "false"
@@ -101,12 +113,12 @@ job "codimd" {
         }
       }
     }
-
-    ${ promtail_task() }
   }
 
   group "db" {
+    ${ group_disk() }
     task "postgres" {
+      ${ task_logs() }
       leader = true
       constraint {
         attribute = "{% raw %}${meta.liquid_volumes}{% endraw %}"
@@ -114,6 +126,7 @@ job "codimd" {
       }
 
       driver = "docker"
+      ${ shutdown_delay() }
       config {
         image = "postgres:11.5"
         volumes = [
@@ -125,6 +138,8 @@ job "codimd" {
         port_map {
           pg = 5432
         }
+        # 128MB, the default postgresql shared_memory config
+        shm_size = 134217728
       }
       template {
         data = <<-EOF
@@ -157,8 +172,6 @@ job "codimd" {
         }
       }
     }
-
-    ${ promtail_task() }
   }
 
   ${- authproxy_group(

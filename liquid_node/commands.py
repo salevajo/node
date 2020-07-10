@@ -1,4 +1,3 @@
-from pathlib import Path
 from collections import defaultdict
 from time import time, sleep
 import logging
@@ -7,21 +6,15 @@ import base64
 import json
 import argparse
 
-from liquid_node.collections import push_collections_titles
-from liquid_node.import_from_docker import validate_names, ensure_docker_setup_stopped, \
-    add_collections_ini, import_index
 from liquid_node.jobs import wait_for_stopped_jobs
-from .collections import get_collections_to_purge, purge_collection
 from .configuration import config
 from .consul import consul
-from .jobs import get_job, get_collection_job, hoover
+from .jobs import get_job, hoover
 from .nomad import nomad
-from .process import run
-from .util import first
-from .collections import get_search_collections
+from .process import run, run_fg
+from .util import first, retry
 from .docker import docker
 from .vault import vault
-from .import_from_docker import import_collection
 
 
 log = logging.getLogger(__name__)
@@ -181,22 +174,17 @@ def resources():
 
     def get_all_res():
         jobs = [nomad.parse(get_job(job.template)) for job in config.enabled_jobs]
-        for name, settings in config.collections.items():
-            job = get_collection_job(name, settings, 'collection.nomad')
-            jobs.append(nomad.parse(job))
-            deps_job = get_collection_job(name, settings, 'collection-deps.nomad')
-            jobs.append(nomad.parse(deps_job))
         for spec in jobs:
             yield from nomad.get_resources(spec)
 
     total = defaultdict(int)
-    for name, _type, res in get_all_res():
+    for name, count, _type, res in get_all_res():
         for key in ['MemoryMB', 'CPU', 'EphemeralDiskMB']:
             if key not in res:
                 continue
             if res[key] is None:
                 raise RuntimeError("Please update Nomad to 0.9.3+")
-            total[f'{_type} {key}'] += res[key]
+            total[f'{_type} {key}'] += res[key] * count
 
     print('Resource requirement totals: ')
     for key, value in sorted(total.items()):
@@ -212,7 +200,7 @@ def check_system_config():
     if os.uname().sysname == 'Darwin':
         return
 
-    assert int(run("sysctl -n vm.max_map_count")) >= 262144, \
+    assert int(run("cat /proc/sys/vm/max_map_count", shell=True)) >= 262144, \
         'the "vm.max_map_count" kernel parameter is too low, check readme'
 
 
@@ -238,6 +226,8 @@ def deploy(*args):
         'liquid/hoover/auth.django',
         'liquid/hoover/search.django',
         'liquid/hoover/search.postgres',
+        'liquid/hoover/snoop.django',
+        'liquid/hoover/snoop.postgres',
         'liquid/authdemo/auth.django',
         'liquid/nextcloud/nextcloud.admin',
         'liquid/nextcloud/nextcloud.uploads',
@@ -289,19 +279,6 @@ def deploy(*args):
 
     jobs = [(job.name, get_job(job.template)) for job in config.enabled_jobs]
 
-    hov_deps = hoover.Deps()
-    database_tasks = [hov_deps.pg_task]
-    deps_jobs = [(hov_deps.name, get_job(hov_deps.template))]
-    for name, settings in config.collections.items():
-        job = get_collection_job(name, settings)
-        jobs.append((f'collection-{name}', job))
-        deps_job = get_collection_job(name, settings, 'collection-deps.nomad')
-        deps_jobs.append((f'collection-{name}-deps', deps_job))
-        database_tasks.append('snoop-' + name + '-pg')
-        if options.secrets:
-            ensure_secret_key(f'liquid/collections/{name}/snoop.django')
-            ensure_secret_key(f'liquid/collections/{name}/snoop.postgres')
-
     ensure_secret('liquid/rocketchat/adminuser', lambda: {
         'username': 'rocketchatadmin',
         'pass': random_secret(64),
@@ -316,41 +293,36 @@ def deploy(*args):
         for app in core_auth_apps:
             log.info('Auth %s -> %s', app['name'], app['callback'])
             cmd = ['./manage.py', 'createoauth2app', app['name'], app['callback']]
-            containers = docker.containers([('liquid_task', 'liquid-core')])
-            container_id = first(containers, 'liquid-core containers')
-            docker_exec_cmd = ['docker', 'exec', container_id] + cmd
-            tokens = json.loads(run(docker_exec_cmd, shell=False))
+            output = retry()(docker.exec_)('liquid:core', *cmd)
+            tokens = json.loads(output)
             vault.set(app['vault_path'], tokens)
 
     # check if there are jobs to stop
     nomad_jobs = set(job['ID'] for job in nomad.jobs())
     jobs_to_stop = nomad_jobs.intersection(set(job.name for job in config.disabled_jobs))
-    print(f'jobs to stop: {jobs_to_stop}')
+    log.info(f'jobs to stop: {jobs_to_stop}')
     if jobs_to_stop:
         for job in jobs_to_stop:
             nomad.stop(job)
         wait_for_stopped_jobs(jobs_to_stop)
 
     # only start deps jobs + hoover
+    hov_deps = hoover.Deps()
+    deps_jobs = [(hov_deps.name, get_job(hov_deps.template))]
+
     health_checks = {}
     for job, hcl in deps_jobs:
         job_checks = start(job, hcl)
         health_checks.update(job_checks)
 
-    # wait for database health checks
-    if options.checks:
-        pg_checks = {k: v for k, v in health_checks.items() if k in database_tasks}
-        wait_for_service_health_checks(pg_checks)
-
-    # run the set password script
-    if options.secrets:
-        for collection in sorted(config.collections.keys()):
-            docker.exec_(f'snoop-{collection}-pg', 'sh', '/local/set_pg_password.sh')
-        docker.exec_(f'hoover-pg', 'sh', '/local/set_pg_password.sh')
-
     # wait until all deps are healthy
     if options.checks:
         wait_for_service_health_checks(health_checks)
+
+    # run the set password script
+    if options.secrets:
+        retry()(docker.exec_)('hoover-deps:search-pg', 'sh', '/local/set_pg_password.sh')
+        retry()(docker.exec_)('hoover-deps:snoop-pg', 'sh', '/local/set_pg_password.sh')
 
     for job, hcl in jobs:
         job_checks = start(job, hcl)
@@ -360,16 +332,6 @@ def deploy(*args):
     if options.checks:
         wait_for_service_health_checks(health_checks)
 
-    # Run initcollection for all unregistered collections
-    already_initialized = sorted(get_search_collections())
-    for collection in sorted(config.collections.keys()):
-        if collection not in already_initialized:
-            log.info('Initializing collection: %s', collection)
-            initcollection(collection)
-        else:
-            log.info('Already initialized collection: %s', collection)
-
-    push_collections_titles()
     log.info("Deploy done!")
 
 
@@ -377,41 +339,11 @@ def halt():
     """Stop all the jobs in nomad."""
 
     jobs = [j.name for j in config.all_jobs]
-    jobs.extend(f'collection-{name}' for name in config.collections)
-    jobs.extend(f'collection-{name}-deps' for name in config.collections)
     for job in jobs:
         log.info('Stopping %s...', job)
         nomad.stop(job)
 
-
-def gc():
-    """Stop all jobs that should not be running in the current deploy configuration:
-    - jobs from collections that are no longer declared in the ini file
-    - jobs from disabled applications.
-    """
-    collectionsgc()
-
-    stopped_jobs = []
-    for job in config.disabled_jobs:
-        nomad.stop(job.name)
-        stopped_jobs.append(job.name)
-
-    wait_for_stopped_jobs(stopped_jobs)
-
-
-def collectionsgc():
-    """Stop jobs from collections that are no longer declared in the ini file."""
-
-    stopped_jobs = []
-    for job in nomad.jobs():
-        if job['ID'].startswith('collection-'):
-            collection_name = job['ID'].split('-')[1]
-            if collection_name not in config.collections and job['Status'] == 'running':
-                log.info('Stopping %s...', job['ID'])
-                nomad.stop(job['ID'])
-                stopped_jobs.append(job['ID'])
-
-    wait_for_stopped_jobs(stopped_jobs)
+    wait_for_stopped_jobs(jobs)
 
 
 def nomadgc():
@@ -440,121 +372,16 @@ def alloc(job, group):
     print(first(running, 'running allocations'))
 
 
-def initcollection(name):
-    """Initialize collection with given name.
-
-    Create the snoop database, create the search index, run dispatcher, add collection
-    to search.
-
-    :param name: the collection name
-    """
-
-    if name not in config.collections:
-        raise RuntimeError('Collection %s does not exist in the liquid.ini file.', name)
-
-    if name in get_search_collections():
-        log.warning(f'Collection "{name}" was already initialized.')
-        return
-
-    docker.exec_(f'snoop-{name}-api', './manage.py', 'initcollection')
-
-    docker.exec_(
-        'hoover-search',
-        './manage.py', 'addcollection', name,
-        '--index', name,
-        f'http://{nomad.get_address()}:8765/{name}/collection/json',
-        '--public',
-    )
-
-
-def purge(force=False):
-    """Purge collections no longer declared in the ini file
-
-    Remove the residual data and the hoover search index for collections that are no
-    longer declared in the ini file.
-    """
-
-    to_purge = get_collections_to_purge()
-    if not to_purge:
-        print('No collections to purge.')
-        return
-
-    if to_purge:
-        print('The following collections will be purged:')
-        for coll in to_purge:
-            print(' - ', coll)
-        print('')
-
-    if not force:
-        confirm = None
-        while confirm not in ['y', 'n']:
-            print('Please confirm collections purge [y/n]: ', end='')
-            confirm = input().lower()
-            if confirm not in ['y', 'n']:
-                print(f'Invalid input: {confirm}')
-
-    if force or confirm == 'y':
-        for coll in to_purge:
-            print(f'Purging collection {coll}...')
-            purge_collection(coll)
-    else:
-        print('No collections will be purged')
-
-
-def deletecollection(name):
-    """Delete a collection by name"""
-    nomad.stop(f'collection-{name}')
-    purge_collection(name)
-
-
-def importfromdockersetup(path, method='link'):
-    """Import collections from existing docker-setup deployment.
-
-    :param path: path to the docker-setup deployment
-    :param move: if true, move data from the docker-setup deployment, otherwise copy data
-    """
-    docker_setup = Path(path).resolve()
-
-    docker_compose_file = docker_setup / 'docker-compose.yml'
-    if not docker_compose_file.is_file():
-        raise RuntimeError(f'Path {docker_setup} is not a docker-setup deployment.')
-
-    collections_json = docker_setup / 'settings' / 'collections.json'
-    if not collections_json.is_file():
-        log.info(f'Unable to find any collections in {docker_setup}.')
-        return
-
-    if config.collections:
-        raise RuntimeError('Please remove existing collections before importing.')
-    if get_collections_to_purge():
-        raise RuntimeError('Please purge existing collections before importing')
-
-    with open(str(collections_json)) as collections_file:
-        collections = json.load(collections_file)
-    validate_names(collections)
-
-    ensure_docker_setup_stopped()
-    halt()
-
-    for name, settings in collections.items():
-        import_collection(name, settings, docker_setup, method)
-    import_index(docker_setup, method)
-
-    add_collections_ini(collections)
-    print()
-    print('After adding the lines, re-run "./liquid deploy"')
-
-
 def shell(name, *args):
-    """Open a shell in a docker container tagged with liquid_task=`name`"""
+    """Open a shell in a docker container addressed as JOB:TASK"""
 
     docker.shell(name, *args)
 
 
 def dockerexec(name, *args):
-    """Run `docker exec` in a container tagged with liquid_task=`name`"""
+    """Run `nomad alloc exec` in a container addressed as JOB:TASK"""
 
-    docker.exec_(name, *args)
+    run_fg(docker.exec_command(name, *args, tty=False), shell=False)
 
 
 def getsecret(path=None):
@@ -567,25 +394,3 @@ def getsecret(path=None):
         for section in vault.list():
             for key in vault.list(section):
                 print(f'{section}{key}')
-
-
-def launchocr(*args):
-    """Launch either a batch or a daily batch OCR process."""
-
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('name', help='collection name')
-    parser.add_argument('--periodic', dest='periodic', help='cron expression')
-    parser.add_argument('--workers', dest='workers', help='worker process count')
-    parser.add_argument('--threads_per_worker', dest='threads_per_worker', help='default and max value is 4.')
-    parser.add_argument('--nice', dest='nice', help='argument to `nice -n`.')
-    options = parser.parse_args(args)
-
-    assert options.name in config.collections, 'unknown collection name: ' + options.name
-    data_dir = Path(config.liquid_collections) / options.name / 'data'
-    assert data_dir.is_dir(), \
-        f'{data_dir} should be a directory where all collection data is stored.'
-
-    hcl = get_collection_job(options.name, vars(options), 'collection-ocr.nomad')
-    spec = nomad.parse(hcl)
-    nomad.run(spec)
-    log.info(f'Launched OCR job {spec["Name"]}')

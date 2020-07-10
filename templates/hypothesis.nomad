@@ -1,4 +1,4 @@
-{% from '_lib.hcl' import authproxy_group, task_logs, promtail_task with context -%}
+{% from '_lib.hcl' import shutdown_delay, authproxy_group, task_logs, group_disk with context -%}
 
 job "hypothesis" {
   datacenters = ["dc1"]
@@ -6,13 +6,16 @@ job "hypothesis" {
   priority = 65
 
   group "db" {
+    ${ group_disk() }
     task "pg" {
+      ${ task_logs() }
       constraint {
         attribute = "{% raw %}${meta.liquid_volumes}{% endraw %}"
         operator = "is_set"
       }
 
       driver = "docker"
+      ${ shutdown_delay() }
       config {
         image = "postgres:9.4-alpine"
         volumes = [
@@ -24,6 +27,8 @@ job "hypothesis" {
         port_map {
           pg = 5432
         }
+        # 128MB, the default postgresql shared_memory config
+        shm_size = 134217728
       }
       template {
         data = <<-EOF
@@ -57,17 +62,20 @@ job "hypothesis" {
     }
 
     task "es" {
+      ${ task_logs() }
       constraint {
         attribute = "{% raw %}${meta.liquid_volumes}{% endraw %}"
         operator = "is_set"
       }
 
       driver = "docker"
+      ${ shutdown_delay() }
       config {
         image = "hypothesis/elasticsearch:latest"
-        args = ["/bin/sh", "-c", "chown -R 1000:1000 /usr/share/elasticsearch/data && echo chown done && /usr/local/bin/docker-entrypoint.sh"]
+        args = ["/bin/sh", "-c", "chown -R 1000:1000 /usr/share/elasticsearch/data && chown 1000:1000 /usr/share/elasticsearch/data /es_repo && echo chown done && /usr/local/bin/docker-entrypoint.sh"]
         volumes = [
           "{% raw %}${meta.liquid_volumes}{% endraw %}/hypothesis/es/data:/usr/share/elasticsearch/data",
+          "{% raw %}${meta.liquid_volumes}{% endraw %}/hypothesis/es/repo:/es_repo",
         ]
         port_map {
           es = 9200
@@ -79,6 +87,7 @@ job "hypothesis" {
       env {
         discovery.type = "single-node"
         ES_JAVA_OPTS = "-Xms500m -Xmx500m"
+        path.repo = "/es_repo"
       }
       resources {
         memory = 1000
@@ -90,6 +99,7 @@ job "hypothesis" {
       service {
         name = "hypothesis-es"
         port = "es"
+        tags = ["fabio-/_h_es strip=/_h_es"]
         check {
           name = "http"
           initial_status = "critical"
@@ -102,14 +112,14 @@ job "hypothesis" {
     }
 
     task "rabbitmq" {
+      ${ task_logs() }
       constraint {
         attribute = "{% raw %}${meta.liquid_volumes}{% endraw %}"
         operator = "is_set"
       }
 
-      ${ task_logs() }
-
       driver = "docker"
+      ${ shutdown_delay() }
       config {
         image = "rabbitmq:3.6-management-alpine"
         volumes = [
@@ -143,12 +153,12 @@ job "hypothesis" {
         }
       }
     }
-
-    ${ promtail_task() }
   }
 
   group "h" {
+    ${ group_disk() }
     task "hypothesis" {
+      ${ task_logs() }
       # Constraint required for hypothesis-usersync
       constraint {
         attribute = "{% raw %}${meta.liquid_volumes}{% endraw %}"
@@ -210,7 +220,7 @@ job "hypothesis" {
           {{- range service "hypothesis-es" }}
           ELASTICSEARCH_URL = "http://{{.Address}}:{{.Port}}"
           {{- end }}
-          
+
           {{- range service "hypothesis-pg" }}
             DATABASE_URL = "postgresql://hypothesis:
             {{- with secret "liquid/hypothesis/hypothesis.postgres" -}}
@@ -218,24 +228,25 @@ job "hypothesis" {
             {{- end -}}
             @{{.Address}}:{{.Port}}/hypothesis"
           {{- end }}
-          
+
           {{- range service "hypothesis-rabbitmq" }}
           BROKER_URL = "amqp://guest:guest@{{.Address}}:{{.Port}}//"
           {{- end }}
-          
+
           APP_URL = "${config.liquid_http_protocol}://hypothesis.${liquid_domain}"
           CLIENT_URL = "${config.liquid_http_protocol}://client.hypothesis.${liquid_domain}"
+          CLIENT_RPC_ALLOWED_ORIGINS = "${config.liquid_http_protocol}://client.hypothesis.${liquid_domain} ${config.liquid_http_protocol}://hypothesis.${liquid_domain} ${config.liquid_http_protocol}://dokuwiki.${liquid_domain} ${config.liquid_http_protocol}://hoover.${liquid_domain} ${config.liquid_http_protocol}://${liquid_domain}"
           PROXY_AUTH = "true"
           AUTHORITY = ${liquid_domain|tojson}
           {{- with secret "liquid/hypothesis/hypothesis.secret_key" }}
             SECRET_KEY = {{.Data.secret_key|toJSON}}
           {{- end }}
-          
+
           {{- if keyExists "liquid_debug" }}
           PYRAMID_DEBUG_ALL = "true"
           PYRAMID_RELOAD_TEMPLATES = "true"
           {{- end }}
-          
+
           LIQUID_URL = "${config.liquid_http_protocol}://${liquid_domain}"
           LIQUID_TITLE = "${config.liquid_title}"
           EOF
@@ -308,8 +319,6 @@ job "hypothesis" {
         }
       }
     }
-
-    ${ promtail_task() }
   }
 
   ${- authproxy_group(
@@ -320,7 +329,9 @@ job "hypothesis" {
     ) }
 
   group "client" {
+    ${ group_disk() }
     task "nginx" {
+      ${ task_logs() }
       driver = "docker"
       config = {
         image = "${config.image('h-client')}"
@@ -334,6 +345,7 @@ job "hypothesis" {
       template {
         data = <<-EOF
           LIQUID_DOMAIN = ${liquid_domain|tojson}
+          LIQUID_HTTP_PROTO = ${config.liquid_http_protocol|tojson}
           EOF
         destination = "local/bake.env"
         env = true
@@ -361,7 +373,5 @@ job "hypothesis" {
         }
       }
     }
-
-    ${ promtail_task() }
   }
 }

@@ -1,4 +1,4 @@
-{% from '_lib.hcl' import group_disk, task_logs, promtail_task -%}
+{% from '_lib.hcl' import group_disk, task_logs -%}
 
 job "drone" {
   datacenters = ["dc1"]
@@ -56,8 +56,6 @@ job "drone" {
         }
       }
     }
-
-    ${ promtail_task() }
   }
 
 
@@ -72,7 +70,7 @@ job "drone" {
       ${ task_logs() }
       driver = "docker"
       config {
-        image = "drone/drone:1.4.0"
+        image = "drone/drone:1.8"
         volumes = [
           "/var/run/docker.sock:/var/run/docker.sock",
           "{% raw %}${meta.liquid_volumes}{% endraw %}/drone:/data",
@@ -86,6 +84,9 @@ job "drone" {
       }
       env {
         DRONE_LOGS_DEBUG = "true"
+        # https://discourse.drone.io/t/1-5-0-release-notes/5797
+        DRONE_AGENTS_DISABLED = "true"
+
         DRONE_GITHUB_SERVER = "https://github.com"
         DRONE_SERVER_HOST = "jenkins.${liquid_domain}"
         DRONE_SERVER_PROTO = "${config.liquid_http_protocol}"
@@ -139,7 +140,5 @@ job "drone" {
         }
       }
     }
-
-    ${ promtail_task() }
   }
 }

@@ -1,9 +1,9 @@
-{% from '_lib.hcl' import group_disk, task_logs, promtail_task -%}
+{% from '_lib.hcl' import group_disk, task_logs -%}
 
 job "hoover-ui" {
   datacenters = ["dc1"]
   type = "batch"
-  priority = 80
+  priority = 91
 
   group "ui" {
     ${ group_disk() }
@@ -30,11 +30,14 @@ job "hoover-ui" {
         }
         args = ["npm", "run", "build"]
       }
+
+      env {
+        TIMESTAMP = "${config.timestamp}"
+      }
+
       resources {
-        memory = 900
+        memory = 1300
       }
     }
-
-    ${ promtail_task() }
   }
 }

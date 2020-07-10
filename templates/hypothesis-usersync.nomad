@@ -1,5 +1,3 @@
-{% from '_lib.hcl' import promtail_task -%}
-
 job "hypothesis-usersync" {
   datacenters = ["dc1"]
   type = "batch"
@@ -34,17 +32,11 @@ job "hypothesis-usersync" {
           #!/bin/sh
           set -ex
 
-          core_container_id="$(docker ps -q -f label=liquid_task=liquid-core)"
-          hypothesis_pg_container_id="$(docker ps -q -f label=liquid_task=hypothesis-pg)"
-          hypothesis_container_id="$(docker ps -q -f label=liquid_task=hypothesis-h)"
-
-          liquid_core_users="$(docker exec $core_container_id /local/users.py)"
-          hypothesis_users="$(docker exec $hypothesis_pg_container_id psql -U hypothesis hypothesis -c 'COPY (SELECT username FROM "user") TO stdout WITH CSV;')"
-          docker exec $hypothesis_container_id /local/usersync.py "$liquid_core_users" "$hypothesis_users"
+          liquid_core_users="$(${exec_command('liquid:core', '/local/users.py')})"
+          hypothesis_users="$(${exec_command('hypothesis:pg', 'psql', '-U', 'hypothesis', 'hypothesis', '-c', "'COPY (SELECT username FROM public.user) TO stdout WITH CSV;'")})"
+          ${exec_command('hypothesis:hypothesis', '/local/usersync.py', '"$liquid_core_users"', '"$hypothesis_users"')}
         EOF
       }
     }
-
-    ${ promtail_task() }
   }
 }

@@ -21,7 +21,7 @@ Next define the collection in `liquid.ini`:
 
 ```ini
 [collection:testdata]
-workers = 1
+process = True
 ```
 
 Then let the `deploy` command pick up the new collection:
@@ -39,11 +39,11 @@ To add new collections simply append to the `liquid.ini` file:
 
 ```ini
 [collection:always-changes]
-workers = 3
+process = True
 sync = True
 
 [collection:static-data]
-workers = 1
+process = True
 ```
 
 ... and run `./liquid deploy`. The requested number of workers and their dependencies will be deployed on the Nomad cluster; see them run on the Nomad UI.
@@ -61,22 +61,11 @@ The collection names must follow the [elasticsearch index naming guide](https://
 
 In order to remove a collection, take the following steps:
 1. Remove the corresponding collection section from the `liquid.ini` file.
-2. Run `./liquid collectionsgc`
-3. Run `./liquid purge`
+2. Run `./liquid shell hoover:snoop purge` -- use optional argument `--force` to skip manual confirmation. This command is [not implemented](https://github.com/liquidinvestigations/hoover-snoop2/issues/321).
 
 
-## Tesseract Batch OCR
+## Tesseract OCR
 
-**Warning:** This implementation outputs data in the `liquid_collection` directory for the selected collection. 
-
-Use the following commands to run Tesseract OCR on the collection data's
-`/data/ocr/<language-code>` paths, outputting PDFs its `ocr` directory.
-
-```shell
-./liquid launchocr testdata
-./liquid shell snoop-testdata-api ./manage.py createocrsource tesseract-batch /opt/hoover/collection/ocr/tesseract-batch
-./liquid shell snoop-testdata-api ./manage.py rundispatcher
-```
-
-To run the batch job periodically use `--periodic=@daily` (or any other [cron expression accepted by Nomad](https://www.nomadproject.io/docs/job-specification/periodic.html#cron)).
-To stop it from staturating 12 cores for each collection, start (or update) the jobs with `--workers 1 --threads_per_worker 1 --nice 10`.
+Use the collection's `ocr_languages` config value to set any number of
+languages for [tesseract 4.0
+LSTM](https://tesseract-ocr.github.io/tessdoc/Data-Files#data-files-for-version-400-november-29-2016).

@@ -42,7 +42,8 @@ class JsonApi:
         with urlopen(req) as res:
             if res.status >= 200 and res.status < 300:
                 content = res.read()
-                if res.headers.get('Content-Type') == 'application/json' and len(content):
+                content_type = res.headers.get('Content-Type') or ""
+                if content_type.startswith('application/json') and len(content):
                     return json.loads(content)
                 else:
                     return None
@@ -52,7 +53,7 @@ class JsonApi:
     def get(self, url):
         return self.request('GET', url)
 
-    def post(self, url, data):
+    def post(self, url, data=None):
         return self.request('POST', url, data)
 
     def put(self, url, data):
