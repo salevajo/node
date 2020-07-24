@@ -35,6 +35,7 @@ job "nextcloud" {
         labels {
           liquid_task = "nextcloud"
         }
+        memory_hard_limit = ${3 * config.nextcloud_memory_limit}
       }
       template {
         data = <<EOF
@@ -144,6 +145,7 @@ job "nextcloud" {
         port_map {
           pg = 5432
         }
+        memory_hard_limit = 750
       }
       template {
         data = <<-EOF

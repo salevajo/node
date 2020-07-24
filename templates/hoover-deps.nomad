@@ -51,6 +51,11 @@ job "hoover-deps" {
         attribute = "{% raw %}${meta.liquid_volumes}{% endraw %}"
         operator = "is_set"
       }
+      affinity {
+        attribute = "{% raw %}${meta.liquid_large_databases}{% endraw %}"
+        value     = "true"
+        weight    = 100
+      }
 
       driver = "docker"
 
@@ -113,6 +118,7 @@ job "hoover-deps" {
     ${ continuous_reschedule() }
     ${ group_disk() }
     count = ${config.elasticsearch_data_node_count}
+    spread { attribute = {% raw %}"${attr.unique.hostname}"{% endraw %} }
 
     task "es" {
       ${ task_logs() }
@@ -196,6 +202,12 @@ job "hoover-deps" {
         operator = "is_set"
       }
 
+      affinity {
+        attribute = "{% raw %}${meta.liquid_large_databases}{% endraw %}"
+        value     = "true"
+        weight    = 100
+      }
+
       driver = "docker"
       ${ shutdown_delay() }
       config {
@@ -211,6 +223,7 @@ job "hoover-deps" {
         }
         # 128MB, the default postgresql shared_memory config
         shm_size = 134217728
+        memory_hard_limit = 1200
       }
       template {
         data = <<EOF
@@ -250,6 +263,7 @@ job "hoover-deps" {
 
     ${ continuous_reschedule() }
     ${ group_disk() }
+    spread { attribute = {% raw %}"${attr.unique.hostname}"{% endraw %} }
 
     task "tika" {
       ${ task_logs() }
@@ -264,11 +278,12 @@ job "hoover-deps" {
         labels {
           liquid_task = "hoover-tika"
         }
+        memory_hard_limit = ${4 * config.tika_memory_limit}
       }
 
       resources {
         memory = ${config.tika_memory_limit}
-        cpu = 200
+        cpu = 500
         network {
           mbits = 1
           port "tika" {}
@@ -325,6 +340,12 @@ job "hoover-deps" {
         operator = "is_set"
       }
 
+      affinity {
+        attribute = "{% raw %}${meta.liquid_large_databases}{% endraw %}"
+        value     = "true"
+        weight    = 100
+      }
+
       driver = "docker"
       ${ shutdown_delay() }
       config {
@@ -341,6 +362,18 @@ job "hoover-deps" {
         }
         labels {
           liquid_task = "snoop-rabbitmq"
+        }
+        memory_hard_limit = ${2 * config.snoop_rabbitmq_memory_limit}
+      }
+
+      resources {
+        memory = ${config.snoop_rabbitmq_memory_limit}
+        cpu = 250
+        network {
+          mbits = 1
+          port "amqp" {}
+          port "http" {}
+          port "prom" {}
         }
       }
 
@@ -365,17 +398,6 @@ job "hoover-deps" {
         data = <<-EOF
           [rabbitmq_prometheus,rabbitmq_management].
           EOF
-      }
-
-      resources {
-        memory = ${config.snoop_rabbitmq_memory_limit}
-        cpu = 150
-        network {
-          mbits = 1
-          port "amqp" {}
-          port "http" {}
-          port "prom" {}
-        }
       }
 
       service {
@@ -420,6 +442,12 @@ job "hoover-deps" {
         operator = "is_set"
       }
 
+      affinity {
+        attribute = "{% raw %}${meta.liquid_large_databases}{% endraw %}"
+        value     = "true"
+        weight    = 100
+      }
+
       driver = "docker"
       ${ shutdown_delay() }
       config {
@@ -436,6 +464,7 @@ job "hoover-deps" {
           pg = 5432
         }
         shm_size = ${int(config.snoop_postgres_memory_limit * 0.27) * 1024 * 1024}
+        memory_hard_limit = ${2 * config.snoop_postgres_memory_limit}
       }
 
       template {
@@ -443,7 +472,7 @@ job "hoover-deps" {
         data = <<-EOF
           listen_addresses = '*'
           port = 5432                             # (change requires restart)
-          max_connections = 150                   # (change requires restart)
+          max_connections = ${config.snoop_postgres_max_connections}  # (change requires restart)
           shared_buffers = ${int(config.snoop_postgres_memory_limit * 0.25)}MB  # min 128kB
           huge_pages = try                        # on, off, or try
           temp_buffers = 32MB                     # min 800kB
