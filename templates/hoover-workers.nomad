@@ -1,16 +1,15 @@
-{% from '_lib.hcl' import authproxy_group, continuous_reschedule, set_pg_password_template, task_logs, group_disk with context -%}
+{% from '_lib.hcl' import set_pg_password_template, task_logs, group_disk with context -%}
 
 job "hoover-workers" {
   datacenters = ["dc1"]
   type = "system"
   priority = 90
 
-
-  {% if config.snoop_workers_enabled %}
   group "snoop-workers" {
     ${ group_disk() }
 
     task "snoop-workers" {
+      user = "root:root"
       ${ task_logs() }
 
       constraint {
@@ -25,7 +24,8 @@ job "hoover-workers" {
       driver = "docker"
       config {
         image = "${config.image('hoover-snoop2')}"
-        args = ["sh", "/local/startup.sh"]
+        args = ["/local/startup.sh"]
+        entrypoint = ["/bin/bash", "-ex"]
         volumes = [
           ${hoover_snoop2_repo}
           "{% raw %}${meta.liquid_collections}{% endraw %}:/opt/hoover/collections",
@@ -46,17 +46,15 @@ job "hoover-workers" {
         }
         memory_hard_limit = ${config.snoop_worker_hard_memory_limit}
       }
+
       resources {
         memory = ${config.snoop_worker_memory_limit}
         cpu = ${config.snoop_worker_cpu_limit}
       }
-      env {
-        SNOOP_COLLECTION_ROOT = "/opt/hoover/collections"
-        SYNC_FILES = "${sync}"
-      }
+
       template {
         data = <<-EOF
-          #!/bin/sh
+          #!/bin/bash
           set -ex
           # exec tail -f /dev/null
           if  [ -z "$SNOOP_TIKA_URL" ] \
@@ -72,6 +70,7 @@ job "hoover-workers" {
         env = false
         destination = "local/startup.sh"
       }
+
       env {
         SNOOP_ES_URL = "http://{% raw %}${attr.unique.network.ip-address}{% endraw %}:9990/_es"
         SNOOP_TIKA_URL = "http://{% raw %}${attr.unique.network.ip-address}{% endraw %}:9990/_tika/"
@@ -81,6 +80,9 @@ job "hoover-workers" {
         SNOOP_MIN_WORKERS = "${config.snoop_min_workers_per_node}"
         SNOOP_MAX_WORKERS = "${config.snoop_max_workers_per_node}"
         SNOOP_CPU_MULTIPLIER = "${config.snoop_cpu_count_multiplier}"
+
+        SNOOP_COLLECTION_ROOT = "/opt/hoover/collections"
+        SYNC_FILES = "${sync}"
       }
       template {
         data = <<-EOF
@@ -104,7 +106,17 @@ job "hoover-workers" {
         destination = "local/snoop.env"
         env = true
       }
+
+      #service {
+      #  check {
+      #    name = "check-workers-script"
+      #    type = "script"
+      #    command = "/bin/bash"
+      #    args = ["-exc", "cd /opt/hoover/snoop; ./manage.py checkworkers"]
+      #    interval = "${check_interval}"
+      #    timeout = "${check_timeout}"
+      #  }
+      #}
     }
   }
-  {% endif %}
 }

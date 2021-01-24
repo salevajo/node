@@ -11,6 +11,7 @@ job "liquid" {
 
     task "core" {
       ${ task_logs() }
+
       # Constraint required for hypothesis-usersync
       constraint {
         attribute = "{% raw %}${meta.liquid_volumes}{% endraw %}"
@@ -30,7 +31,10 @@ job "liquid" {
         port_map {
           http = 8000
         }
+
+        memory_hard_limit = 2048
       }
+
       template {
         data = <<-EOF
           DEBUG = {{key "liquid_debug" | toJSON }}
@@ -40,15 +44,19 @@ job "liquid" {
           LIQUID_HTTP_PROTOCOL = "${config.liquid_http_protocol}"
           LIQUID_DOMAIN = "{{key "liquid_domain"}}"
           LIQUID_TITLE = "${config.liquid_title}"
+          LIQUID_VERSION = "${config.liquid_version}"
+          LIQUID_CORE_VERSION = "${config.liquid_core_version}"
           SERVICE_ADDRESS = "{{env "NOMAD_IP_http"}}"
           AUTH_STAFF_ONLY = "${config.auth_staff_only}"
           AUTH_AUTO_LOGOUT = "${config.auth_auto_logout}"
           LIQUID_2FA = "${config.liquid_2fa}"
           LIQUID_APPS = ${ config.liquid_apps | tojson | tojson}
+          LIQUID_HYPOTHESIS_EMBED = "${config.liquid_http_protocol}://hypothesis.${config.liquid_domain}/embed.js"
         EOF
         destination = "local/docker.env"
         env = true
       }
+
       template {
         data = <<-EOF
           #!/usr/bin/env python3
@@ -64,6 +72,7 @@ job "liquid" {
           perms = "755"
           destination = "local/users.py"
       }
+
       resources {
         memory = 200
         network {
@@ -73,6 +82,7 @@ job "liquid" {
           }
         }
       }
+
       service {
         name = "core"
         port = "http"
@@ -92,6 +102,7 @@ job "liquid" {
           }
         }
       }
+
     }
   }
 }

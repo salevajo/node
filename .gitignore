@@ -1,4 +1,4 @@
-/vagrant/.vagrant
+/ci/.vagrant
 /liquid.ini
 /volumes
 /collections
@@ -7,3 +7,5 @@ __pycache__
 *.swp
 /local_jobs/*
 !/local_jobs/.gitkeep
+/.liquid.update.lock
+/versions.ini

@@ -1,4 +1,6 @@
+from time import time, sleep
 import logging
+import urllib.error
 
 from .configuration import config
 from .jsonapi import JsonApi
@@ -14,10 +16,26 @@ class Nomad(JsonApi):
         super().__init__(endpoint + '/v1/')
 
     def parse(self, hcl):
-        return self.post('jobs/parse', {'JobHCL': hcl, 'Canonicalize': True})
+        try:
+            return self.post('jobs/parse', {'JobHCL': hcl, 'Canonicalize': True})
+        except urllib.error.HTTPError as e:
+            log.error(e.read().decode('utf-8'))
+            raise e
 
     def run(self, spec):
-        self.post('jobs', {'job': spec})
+        if spec.get('Type') != 'batch':
+            if not spec.get('Update'):
+                spec['Update'] = {}
+            spec['Update']['MaxParallel'] = 0
+            for group in spec.get('TaskGroups', []):
+                if not group.get('Update'):
+                    group['Update'] = {}
+                group['Update']['MaxParallel'] = 0
+        try:
+            self.post('jobs', {'job': spec})
+        except urllib.error.HTTPError as e:
+            log.error(e.read().decode('utf-8'))
+            raise e
 
         job_id = spec['ID']
         if spec.get('Periodic'):
@@ -53,6 +71,14 @@ class Nomad(JsonApi):
                 name = f'{group_name}-{task["Name"]}'
                 yield name, count, spec['Type'], task['Resources']
 
+    def get_images(self, spec):
+        """Generates docker image names from spec."""
+
+        for group in spec['TaskGroups'] or []:
+            for task in group['Tasks'] or []:
+                if task['Driver'] == 'docker':
+                    yield task['Config']['image']
+
     def jobs(self):
         return self.get('jobs')
 
@@ -82,6 +108,36 @@ class Nomad(JsonApi):
 
     def stop(self, job):
         return self.delete(f'job/{job}')
+
+    def stop_and_wait(self, jobs):
+        from liquid_node.configuration import config
+
+        if not jobs:
+            return
+
+        log.debug('Stopping jobs: ' + ', '.join(jobs))
+        for job in jobs:
+            self.stop(job)
+
+        jobs = list(jobs)
+        log.debug('Waiting for the following jobs to die: ' + ', '.join(jobs))
+        timeout = time() + config.wait_max
+
+        while jobs and time() < timeout:
+            sleep(config.wait_interval / 3)
+            just_removed = []
+
+            nomad_jobs = {job['ID']: job for job in self.jobs() if job['ID'] in jobs}
+            for job_name in jobs:
+                if job_name not in nomad_jobs or nomad_jobs[job_name]['Status'] == 'dead':
+                    jobs.remove(job_name)
+                    just_removed.append(job_name)
+
+            if just_removed:
+                log.info('Jobs stopped: ' + ", ".join(just_removed))
+
+        if jobs:
+            raise RuntimeError(f'The following jobs are still running: {jobs}')
 
     def gc(self):
         return self.put('system/gc', None)
